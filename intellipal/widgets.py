@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Tuple
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -72,6 +72,7 @@ class ColorControl(QWidget):
     colorChanged = Signal(int, tuple)
     resetRequested = Signal(int)
     saveRequested = Signal(int)
+    isolateRequested = Signal(int)
 
     def __init__(self, label: str, index: int, initial: ColorTuple):
         super().__init__()
@@ -87,6 +88,8 @@ class ColorControl(QWidget):
         self.preview = QPushButton()
         self.preview.setFixedSize(40, 20)
         self.preview.setToolTip("Open color picker")
+        self._preview_disabled = False
+        self._preview_disabled_style = "border: 1px solid #9e9e9e; background-color: #e0e0e0;"
 
         self._traffic_labels: list[QLabel] = []
         self._traffic_active_style = (
@@ -113,6 +116,10 @@ class ColorControl(QWidget):
             self.style().standardIcon(QStyle.SP_DialogSaveButton),
             "Save",
         )
+        self.isolate_action = actions_menu.addAction(
+            self.style().standardIcon(QStyle.SP_MessageBoxInformation),
+            "Isolate",
+        )
         self.actions_btn.setMenu(actions_menu)
 
         self.traffic_container = QWidget()
@@ -120,7 +127,7 @@ class ColorControl(QWidget):
         traffic_layout.setContentsMargins(0, 0, 0, 0)
         traffic_layout.setSpacing(2)
         self.traffic_container.setFixedHeight(16)
-        self.traffic_container.setMaximumWidth(120)
+        self.traffic_container.setMaximumWidth(170)
         self.traffic_container.setVisible(True)
 
         for _ in range(6):
@@ -152,11 +159,15 @@ class ColorControl(QWidget):
         self.preview.clicked.connect(self._on_pick)
         self.reset_action.triggered.connect(lambda: self.resetRequested.emit(self._index))
         self.save_action.triggered.connect(lambda: self.saveRequested.emit(self._index))
+        self.isolate_action.triggered.connect(lambda: self.isolateRequested.emit(self._index))
 
         self.set_color(initial, emit=False)
 
     def _update_preview(self) -> None:
         color = tuple_to_color(self._color)
+        if self._preview_disabled:
+            self.preview.setStyleSheet(self._preview_disabled_style)
+            return
         self.preview.setStyleSheet(
             f"border: 1px solid #444; background-color: {color.name().upper()};"
         )
@@ -186,6 +197,22 @@ class ColorControl(QWidget):
     def set_actions_enabled(self, reset_enabled: bool, save_enabled: bool) -> None:
         self.reset_action.setEnabled(reset_enabled)
         self.save_action.setEnabled(save_enabled)
+
+    def set_actions_icon(self, icon: QIcon, size: int = 16) -> None:
+        if not icon.isNull():
+            self.actions_btn.setIcon(icon)
+            self.actions_btn.setIconSize(QSize(size, size))
+
+    def set_isolation_state(self, isolation_active: bool, is_isolated: bool) -> None:
+        if isolation_active and is_isolated:
+            self.isolate_action.setText("Clear")
+        else:
+            self.isolate_action.setText("Isolate")
+
+        preview_enabled = not isolation_active or is_isolated
+        self._preview_disabled = not preview_enabled
+        self.preview.setEnabled(preview_enabled)
+        self._update_preview()
 
     def update_traffic_lights(self, session_labels: list[tuple[str, bool]], focus_active: bool) -> None:
         for idx, label_widget in enumerate(self._traffic_labels):

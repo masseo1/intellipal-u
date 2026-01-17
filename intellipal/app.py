@@ -5,8 +5,9 @@ import os
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from PySide6.QtCore import Qt, QTimer, QProcess, QEvent
+from PySide6.QtCore import Qt, QTimer, QProcess, QEvent, QSize
 from PySide6.QtGui import QDesktopServices, QIcon, QPixmap, QPainter, QPalette, QGuiApplication, QAction, QWindow, QColor
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
@@ -72,6 +73,23 @@ class GameSession:
 class SettingsDialog(QDialog):
     def __init__(self, settings: Dict, on_change):
         super().__init__()
+        # Set dialog icon to project settings SVG if present
+        try:
+            base_dir = Path(__file__).resolve().parents[1]
+            svg_path = base_dir / "resources" / "settings.svg"
+            if svg_path.exists():
+                try:
+                    renderer = QSvgRenderer(str(svg_path))
+                    pix = QPixmap(QSize(24, 24))
+                    pix.fill(Qt.transparent)
+                    painter = QPainter(pix)
+                    renderer.render(painter)
+                    painter.end()
+                    self.setWindowIcon(QIcon(pix))
+                except Exception:
+                    self.setWindowIcon(QIcon(str(svg_path)))
+        except Exception:
+            pass
         self.setWindowTitle("Settings")
         self._settings = dict(settings)
         self._on_change = on_change
@@ -189,11 +207,11 @@ class SettingsDialog(QDialog):
         general_layout.addRow("Color labels (16 lines)", self.color_labels)
 
         emulator_layout.addRow("Emulator poll rate", self.emulator_poll_rate)
-        emulator_layout.addRow("Emulator start resolution", self.emulator_start_res)
         emulator_layout.addRow("Exec file path", exec_widget)
         emulator_layout.addRow("GROM file path", grom_widget)
 
         session_layout.addRow("ROMs folder", roms_widget)
+        session_layout.addRow("Emulator start resolution", self.emulator_start_res)
         session_layout.addRow("Game resolutions", self.game_resolutions)
         session_layout.addRow("Isolate background", isolate_widget)
 
@@ -581,8 +599,14 @@ class GameDialog(QMainWindow):
         reference_action.setDefaultWidget(reference_widget)
         reference_menu.addAction(reference_action)
 
+        self.ref_status_label = ElideLabel("")
+        self.ref_status_label.setToolTip("")
+        self.ref_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.ref_status_label.setVisible(False)
+
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #b00020;")
+        self.status_label.setAlignment(Qt.AlignRight)
         self._status_base_text = "Emulator not running."
         self._update_status_focus()
 
@@ -607,7 +631,12 @@ class GameDialog(QMainWindow):
         central_layout.setContentsMargins(6, 6, 6, 6)
         central_layout.setSpacing(6)
         central_layout.addWidget(self.scroll_area)
-        central_layout.addWidget(self.status_label)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(6)
+        status_row.addWidget(self.ref_status_label)
+        status_row.addWidget(self.status_label)
+        central_layout.addLayout(status_row)
         self.setCentralWidget(central)
 
         self._update_reference_controls(enabled=False)
@@ -936,6 +965,7 @@ class GameDialog(QMainWindow):
         if value == "<none>":
             self.session.memory_map.set_ref_palette_start("")
             self._update_reference_controls(enabled=False)
+            self._update_ref_status_label(None)
             return
         palette_path = self.main_window._get_palette_path(value)
         if palette_path is None:
@@ -944,9 +974,13 @@ class GameDialog(QMainWindow):
         if not parsed.valid:
             QMessageBox.warning(self, "Reference Palette", parsed.error or "Invalid palette file")
             return
-        self.session.memory_map.write_ref_palette(self.main_window._colors_to_map_values(parsed.colors))
         self._update_reference_controls(enabled=True)
+        # Always write reference palette on selection so the map is populated
+        self._apply_reference_palette()
         self._apply_ref_split()
+        self._update_ref_status_label(value)
+        if self.main_window._isolation_active():
+            self.main_window._apply_isolation_state()
 
     def _on_split_mode_changed(self, value: str) -> None:
         self._apply_ref_split()
@@ -986,6 +1020,44 @@ class GameDialog(QMainWindow):
         if self._ref_flip_negative:
             line_value = -line_value
         self.session.memory_map.set_ref_palette_start(f"{orientation}:{line_value}")
+        if self._reference_palette_active():
+            self._apply_reference_palette()
+
+    def _reference_palette_active(self) -> bool:
+        return (
+            self.ref_palette_combo.currentText() != "<none>"
+            and self.ref_split_mode.currentText() != "No Split"
+        )
+
+    def _get_reference_palette_colors(self) -> List[ColorTuple] | None:
+        name = self.ref_palette_combo.currentText()
+        if name == "<none>":
+            return None
+        palette_path = self.main_window._get_palette_path(name)
+        if palette_path is None:
+            return None
+        parsed = parse_palette_file(palette_path)
+        if not parsed.valid:
+            return None
+        return parsed.colors
+
+    def _apply_reference_palette(self) -> None:
+        colors = self._get_reference_palette_colors()
+        if colors is None:
+            return
+        if self.main_window._isolation_active():
+            colors = self.main_window._apply_isolation_to_colors(colors)
+        self.session.memory_map.write_ref_palette(self.main_window._colors_to_map_values(colors))
+
+    def _update_ref_status_label(self, name: str | None) -> None:
+        if not name or name == "<none>":
+            self.ref_status_label.setText("")
+            self.ref_status_label.setToolTip("")
+            self.ref_status_label.setVisible(False)
+            return
+        self.ref_status_label.setVisible(True)
+        self.ref_status_label.setText(f"Ref:{name}")
+        self.ref_status_label.setToolTip(name)
 
     def _update_reference_controls(self, enabled: bool) -> None:
         self.ref_split_mode.setEnabled(enabled)
@@ -1007,6 +1079,7 @@ class MainWindow(QMainWindow):
         self._dock_width = 520
         
         self._early_logs = []
+        self._isolated_indices: set[int] = set()
 
         self.settings = load_settings(log_callback=self._early_log)
         self.base_dir = Path(__file__).resolve().parents[1]
@@ -1023,10 +1096,51 @@ class MainWindow(QMainWindow):
         self.settings_btn = QToolButton()
         self.new_session_btn = QToolButton()
 
-        self.open_folder_btn.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
-        self.rename_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
-        self.settings_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogContentsView))
-        self.new_session_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        # local helper to load SVG icons from resources (render to pixmap)
+        def _load_icon(name: str, size: int = 24):
+            try:
+                svg_path = self.base_dir / "resources" / f"{name}.svg"
+                if svg_path.exists():
+                    renderer = QSvgRenderer(str(svg_path))
+                    pix = QPixmap(QSize(size, size))
+                    pix.fill(Qt.transparent)
+                    p = QPainter(pix)
+                    renderer.render(p)
+                    p.end()
+                    return QIcon(pix)
+            except Exception:
+                pass
+            return None
+
+        self._load_icon = _load_icon
+
+        # Assign icons from resources when available, otherwise use standard icons
+        icon = self._load_icon("view")
+        self.open_folder_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        icon = self._load_icon("rename")
+        self.rename_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        # Use project SVG for settings icon if available
+        try:
+            svg_path = self.base_dir / "resources" / "settings.svg"
+            if svg_path.exists():
+                # Render SVG into a QPixmap for reliable display across styles
+                try:
+                    renderer = QSvgRenderer(str(svg_path))
+                    pix = QPixmap(QSize(24, 24))
+                    pix.fill(Qt.transparent)
+                    painter = QPainter(pix)
+                    renderer.render(painter)
+                    painter.end()
+                    self.settings_btn.setIcon(QIcon(pix))
+                    self.settings_btn.setIconSize(QSize(24, 24))
+                except Exception:
+                    self.settings_btn.setIcon(QIcon(str(svg_path)))
+            else:
+                self.settings_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogContentsView))
+        except Exception:
+            self.settings_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogContentsView))
+        icon = self._load_icon("game")
+        self.new_session_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_MediaPlay))
 
         self.open_folder_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.rename_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
@@ -1042,10 +1156,15 @@ class MainWindow(QMainWindow):
         resolutions = self.settings.get("game_resolutions", [])
         for res in resolutions:
             self.resolution_combo.addItem(res)
-        # Default to 640x480,8
-        default_idx = self.resolution_combo.findText("640x480,8")
+        # Default to emulator_start_res when available
+        default_res = (self.settings.get("emulator_start_res", "640x480,8") or "640x480,8").strip()
+        default_idx = self.resolution_combo.findText(default_res)
         if default_idx >= 0:
             self.resolution_combo.setCurrentIndex(default_idx)
+        elif default_res:
+            # If not in list, append and select without reordering existing entries
+            self.resolution_combo.addItem(default_res)
+            self.resolution_combo.setCurrentIndex(self.resolution_combo.count() - 1)
         self.resolution_combo.setToolTip("Game session resolution")
 
         self.open_folder_btn.clicked.connect(self._open_palette_folder)
@@ -1055,8 +1174,10 @@ class MainWindow(QMainWindow):
 
         self.dock_left_btn = QToolButton()
         self.dock_right_btn = QToolButton()
-        self.dock_left_btn.setIcon(self.style().standardIcon(QStyle.SP_ArrowLeft))
-        self.dock_right_btn.setIcon(self.style().standardIcon(QStyle.SP_ArrowRight))
+        icon = self._load_icon("dock-left")
+        self.dock_left_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_ArrowLeft))
+        icon = self._load_icon("dock-right")
+        self.dock_right_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_ArrowRight))
         self.dock_left_btn.setToolTip("Dock left")
         self.dock_right_btn.setToolTip("Dock right")
         self.dock_left_btn.clicked.connect(self._dock_left)
@@ -1091,11 +1212,16 @@ class MainWindow(QMainWindow):
         self.open_file_btn = QToolButton()
         self.rename_file_btn = QToolButton()
 
-        self.save_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        self.save_as_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        self.reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.open_file_btn.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
-        self.rename_file_btn.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        icon = self._load_icon("save")
+        self.save_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        icon = self._load_icon("save-as")
+        self.save_as_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        icon = self._load_icon("reset")
+        self.reset_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_BrowserReload))
+        icon = self._load_icon("view")
+        self.open_file_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        icon = self._load_icon("rename")
+        self.rename_file_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
 
         for btn in (self.save_btn, self.save_as_btn, self.reset_btn, self.open_file_btn, self.rename_file_btn):
             btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
@@ -1297,7 +1423,11 @@ class MainWindow(QMainWindow):
         memory_map.set_polling_rate(int(self.settings.get("emulator_poll_rate", 10)))
         palette = self._current_palette_colors()
         if palette is not None:
-            memory_map.write_palette(self._colors_to_map_values(palette))
+            if self._isolated_indices:
+                isolated_colors = self._apply_isolation_to_colors(palette)
+                memory_map.write_palette(self._colors_to_map_values(isolated_colors))
+            else:
+                memory_map.write_palette(self._colors_to_map_values(palette))
         session = GameSession(
             session_id=session_id,
             map_name=map_name,
@@ -1329,10 +1459,65 @@ class MainWindow(QMainWindow):
     def _colors_to_map_values(self, colors: List[ColorTuple]) -> List[int]:
         return [(r << 16) | (g << 8) | b for r, g, b in colors]
 
-    def _push_palette_to_sessions(self, colors: List[ColorTuple]) -> None:
+    def _isolation_active(self) -> bool:
+        return bool(self._isolated_indices)
+
+    def _get_isolate_background_color(self) -> ColorTuple:
+        value = self.settings.get("isolate_background", "#000000")
+        color = QColor(value)
+        if not color.isValid():
+            color = QColor("#000000")
+        return (color.red(), color.green(), color.blue())
+
+    def _apply_isolation_to_colors(self, colors: List[ColorTuple]) -> List[ColorTuple]:
+        if not self._isolated_indices:
+            return colors
+        background = self._get_isolate_background_color()
+        return [colors[i] if i in self._isolated_indices else background for i in range(16)]
+
+    def _write_main_palette_to_sessions(self, colors: List[ColorTuple]) -> None:
         values = self._colors_to_map_values(colors)
         for session in self.game_sessions:
             session.memory_map.write_palette(values)
+
+    def _write_reference_palette_for_sessions(self) -> None:
+        for session in self.game_sessions:
+            if session.dialog is None:
+                continue
+            if session.dialog._reference_palette_active():
+                session.dialog._apply_reference_palette()
+
+    def _push_palette_to_sessions(self, colors: List[ColorTuple]) -> None:
+        if self._isolated_indices:
+            isolated_colors = self._apply_isolation_to_colors(colors)
+            self._write_main_palette_to_sessions(isolated_colors)
+            return
+        self._write_main_palette_to_sessions(colors)
+
+    def _sync_isolation_controls(self) -> None:
+        isolation_active = self._isolation_active()
+        for idx, control in enumerate(self.color_controls):
+            control.set_isolation_state(isolation_active, idx in self._isolated_indices)
+
+    def _apply_isolation_state(self) -> None:
+        state = self._current_state()
+        if not state or state.invalid or len(state.colors) != 16:
+            self._sync_isolation_controls()
+            return
+        if self._isolated_indices:
+            isolated_colors = self._apply_isolation_to_colors(state.colors)
+            self._write_main_palette_to_sessions(isolated_colors)
+        else:
+            self._write_main_palette_to_sessions(state.colors)
+        self._write_reference_palette_for_sessions()
+        self._sync_isolation_controls()
+
+    def _on_color_isolate(self, index: int) -> None:
+        if index in self._isolated_indices:
+            self._isolated_indices.clear()
+        else:
+            self._isolated_indices.add(index)
+        self._apply_isolation_state()
 
     def _poll_game_sessions(self) -> None:
         for session in self.game_sessions:
@@ -1463,10 +1648,16 @@ class MainWindow(QMainWindow):
             control.colorChanged.connect(self._on_color_changed)
             control.resetRequested.connect(self._on_color_reset)
             control.saveRequested.connect(self._on_color_save)
+            control.isolateRequested.connect(self._on_color_isolate)
+            if hasattr(self, "_load_icon"):
+                icon = self._load_icon("menu")
+                if icon is not None:
+                    control.set_actions_icon(icon, size=14)
             self.controls_layout.addWidget(control)
             self.color_controls.append(control)
 
         self.controls_layout.addStretch()
+        self._sync_isolation_controls()
 
     def _palette_dir(self) -> Path:
         path = Path(self.settings.get("palette_dir", "./Palettes"))
@@ -1572,6 +1763,7 @@ class MainWindow(QMainWindow):
             for control in self.color_controls:
                 control.set_pending(False)
                 control.set_actions_enabled(reset_enabled=False, save_enabled=False)
+            self._sync_isolation_controls()
             return
 
         self.file_name_label.setText(state.name)
@@ -1590,6 +1782,7 @@ class MainWindow(QMainWindow):
         self.save_as_btn.setEnabled(True)
         self.open_file_btn.setEnabled(True)
         self._push_palette_to_sessions(state.colors)
+        self._sync_isolation_controls()
 
     def _on_color_changed(self, index: int, color: ColorTuple):
         palette_id = self.current_palette_id
@@ -1871,6 +2064,8 @@ class MainWindow(QMainWindow):
             self._load_palette_list()
             self._apply_session_settings()
             self._update_game_session_availability()
+            if self._isolation_active():
+                self._apply_isolation_state()
 
         dialog = SettingsDialog(self.settings, on_change)
         dialog.exec()
