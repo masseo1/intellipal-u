@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -462,6 +463,21 @@ class GameDialog(QMainWindow):
         self.main_window = main_window
         self.resolution = resolution
         self.setWindowTitle(f"Game Session {session.session_id}")
+        try:
+            icon_path = Path(__file__).resolve().parents[1] / "resources" / "game.svg"
+            if icon_path.exists():
+                try:
+                    renderer = QSvgRenderer(str(icon_path))
+                    pix = QPixmap(QSize(24, 24))
+                    pix.fill(Qt.transparent)
+                    painter = QPainter(pix)
+                    renderer.render(painter)
+                    painter.end()
+                    self.setWindowIcon(QIcon(pix))
+                except Exception:
+                    self.setWindowIcon(QIcon(str(icon_path)))
+        except Exception:
+            pass
         
         # Parse resolution for dialog sizing
         width, height = 640, 480
@@ -557,17 +573,19 @@ class GameDialog(QMainWindow):
 
         load_action = QAction("Load Game", self)
         quit_action = QAction("Quit Game", self)
+        close_action = QAction("Close", self)
         reset_action = QAction("Reset Game", self)
         self.pause_action = QAction("Pause Game", self)
         screenshot_action = QAction("Screenshot", self)
 
         load_action.triggered.connect(self._load_game)
         quit_action.triggered.connect(lambda: self._send_command("QUIT"))
+        close_action.triggered.connect(self.close)
         reset_action.triggered.connect(lambda: self._send_command("RESET"))
         self.pause_action.triggered.connect(lambda: self._send_command("PAUSE"))
         screenshot_action.triggered.connect(lambda: self._send_command("SCREENSHOT"))
 
-        for action in (load_action, quit_action, reset_action, self.pause_action, screenshot_action):
+        for action in (load_action, quit_action, reset_action, self.pause_action, screenshot_action, close_action):
             game_menu.addAction(action)
 
         self.ref_palette_combo = QComboBox()
@@ -1074,6 +1092,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("IntelliPal")
+        try:
+            icon_path = Path(__file__).resolve().parents[1] / "resources" / "icon_snafu.png"
+            if icon_path.exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
+        except Exception:
+            pass
         self.resize(520, 800)
 
         self._dock_width = 520
@@ -1132,7 +1156,7 @@ class MainWindow(QMainWindow):
                     renderer.render(painter)
                     painter.end()
                     self.settings_btn.setIcon(QIcon(pix))
-                    self.settings_btn.setIconSize(QSize(24, 24))
+                    self.settings_btn.setIconSize(QSize(16, 16))
                 except Exception:
                     self.settings_btn.setIcon(QIcon(str(svg_path)))
             else:
@@ -1594,8 +1618,23 @@ class MainWindow(QMainWindow):
             return
 
     def _get_emulator_path(self) -> Path | None:
-        exe_path = self.base_dir / "resources" / "jzintv_pal.exe"
-        return exe_path if exe_path.exists() else None
+        # Search order:
+        # 1. Current working directory (allows jzintv_pal.exe beside intellipal.exe/runtime)
+        # 2. Frozen executable's directory (when bundled with PyInstaller / single-exe)
+        # 3. The packaged resources folder (existing behavior)
+        candidates = [
+            Path.cwd() / "jzintv_pal.exe",
+        ]
+        try:
+            candidates.append(Path(sys.executable).parent / "jzintv_pal.exe")
+        except Exception:
+            pass
+        candidates.append(self.base_dir / "resources" / "jzintv_pal.exe")
+
+        for p in candidates:
+            if p.exists():
+                return p
+        return None
 
     def _game_sessions_enabled(self) -> bool:
         exec_value = self.settings.get("exec_file_path", ".\\exec.bin")
@@ -2082,6 +2121,12 @@ class MainWindow(QMainWindow):
 def create_app() -> QApplication:
     app = QApplication([])
     window = MainWindow()
+    try:
+        icon_path = Path(__file__).resolve().parents[1] / "resources" / "icon_snafu.png"
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
+    except Exception:
+        pass
     log_path = window.settings.get("log_file", "")
     if log_path:
         try:
