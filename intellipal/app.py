@@ -46,6 +46,10 @@ from .palette import parse_palette_file, update_palette_color, update_palette_fi
 from .settings import load_settings, save_settings, DEFAULT_LABELS
 from .memory_map import SharedMemoryMap
 from .widgets import ColorControl
+try:
+    from ._build import BUILD_ID
+except Exception:
+    BUILD_ID = "DEV"
 
 ColorTuple = Tuple[int, int, int]
 
@@ -91,7 +95,7 @@ class SettingsDialog(QDialog):
                     self.setWindowIcon(QIcon(str(svg_path)))
         except Exception:
             pass
-        self.setWindowTitle("Settings")
+        self.setWindowTitle(f"Settings - Build {BUILD_ID}")
         self._settings = dict(settings)
         self._on_change = on_change
 
@@ -479,7 +483,7 @@ class GameDialog(QMainWindow):
         except Exception:
             pass
         
-        # Parse resolution for dialog sizing
+        # Parse resolution for dialog sizing (logical pixels)
         width, height = 640, 480
         try:
             if "," in resolution:
@@ -632,7 +636,7 @@ class GameDialog(QMainWindow):
         self.video_container = QWidget()
         self.video_container.setStyleSheet("background-color: black;")
         
-        # Use scroll area to clip the larger container to the selected resolution
+        # Use scroll area to clip the container to the selected resolution
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidget(self.video_container)
         self.scroll_area.setWidgetResizable(False)  # Don't resize the widget
@@ -691,19 +695,19 @@ class GameDialog(QMainWindow):
             QMessageBox.warning(self, "Launch", "jzintv_pal executable not found.")
             self.main_window._log_message("Launch failed: jzintv_pal executable not found.")
             return
-        exec_path = os.path.normpath(self.main_window.settings.get("exec_file_path", ".\\exec.bin"))
-        grom_path = os.path.normpath(self.main_window.settings.get("grom_file_path", ".\\grom.bin"))
+        exec_path = self._exec_path()
+        grom_path = self._grom_path()
         display_size = self._current_display_size()
         rom_path = os.path.normpath(rom_path)
         try:
             self._rom_title = Path(rom_path).stem
         except Exception:
             self._rom_title = None
-        if not exec_path or not Path(exec_path).exists():
+        if not exec_path or not exec_path.exists():
             self.main_window._log_message(f"Launch failed: exec.bin not found at {exec_path}")
             QMessageBox.warning(self, "Launch", "Exec file path is missing or invalid.")
             return
-        if not grom_path or not Path(grom_path).exists():
+        if not grom_path or not grom_path.exists():
             self.main_window._log_message(f"Launch failed: grom.bin not found at {grom_path}")
             QMessageBox.warning(self, "Launch", "GROM file path is missing or invalid.")
             return
@@ -730,9 +734,19 @@ class GameDialog(QMainWindow):
         )
         self.process.start()
 
+    def _dpi_scale(self) -> float:
+        handle = self.windowHandle()
+        if handle is not None:
+            screen = handle.screen()
+            if screen is not None:
+                return float(screen.devicePixelRatio())
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            return float(screen.devicePixelRatio())
+        return 1.0
+
     def _current_display_size(self) -> str:
-        # Double the resolution so jzintv renders at higher quality
-        # Dialog will be sized to show only the selected resolution portion
+        # Match jzintv render size to OS DPI scaling to keep visible size consistent
         width, height, depth = 640, 480, 8
         try:
             if "," in self.resolution:
@@ -743,8 +757,23 @@ class GameDialog(QMainWindow):
                 depth = int(depth_str)
         except (ValueError, IndexError):
             pass
-        
-        return f"{width * 2}x{height * 2},{depth}"
+
+        scale = self._dpi_scale()
+        scaled_w = max(1, int(round(width * scale)))
+        scaled_h = max(1, int(round(height * scale)))
+        return f"{scaled_w}x{scaled_h},{depth}"
+
+    def _exec_path(self) -> Path:
+        p = Path(self.main_window.settings.get("exec_file_path", "./exec.bin"))
+        if not p.is_absolute():
+            return (Path.cwd() / p).resolve()
+        return p
+
+    def _grom_path(self) -> Path:
+        p = Path(self.main_window.settings.get("grom_file_path", "./grom.bin"))
+        if not p.is_absolute():
+            return (Path.cwd() / p).resolve()
+        return p
 
     def _stop_emulator(self) -> None:
         if self.process.state() != QProcess.NotRunning:
@@ -1091,7 +1120,7 @@ class GameDialog(QMainWindow):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IntelliPal")
+        self.setWindowTitle(f"IntelliPal - Build {BUILD_ID}")
         try:
             icon_path = Path(__file__).resolve().parents[1] / "resources" / "icon_snafu.png"
             if icon_path.exists():
@@ -1699,9 +1728,12 @@ class MainWindow(QMainWindow):
         self._sync_isolation_controls()
 
     def _palette_dir(self) -> Path:
-        path = Path(self.settings.get("palette_dir", "./Palettes"))
+        # Resolve palette directory exactly as specified in settings.
+        # If the path is relative, resolve it against the current working directory.
+        # Do not fall back to packaged resources; obey user settings.
+        path = Path(self.settings.get("palette_dir", "./palettes"))
         if not path.is_absolute():
-            path = (self.base_dir / path).resolve()
+            return (Path.cwd() / path).resolve()
         return path
 
     def _palette_extensions(self) -> List[str]:

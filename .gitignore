@@ -85,6 +85,7 @@ build/
 Palettes/
 grom.bin
 exec.bin
+intellipal/_build.py
 
 # Ignore directories starting with an underscore anywhere
 **/_*/
