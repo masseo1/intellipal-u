@@ -52,6 +52,8 @@ def run_pyinstaller(resources_dir: Path) -> None:
         f"{resources_dir}{data_sep}resources",
         "--add-data",
         f"{PALETTES_DIR}{data_sep}Palettes",
+        "--icon",
+        str(REPO_ROOT / "resources" / "icon_snafu.ico"),
     ]
     subprocess.run(args, check=True, cwd=str(REPO_ROOT))
 
