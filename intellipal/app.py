@@ -132,7 +132,7 @@ class SettingsDialog(QDialog):
 
         self.palette_extensions = QLineEdit(self._settings["palette_extensions"])
         self.color_save_format = QComboBox()
-        self.color_save_format.addItems(["#rrggbb", "R G B"])
+        self.color_save_format.addItems(["#rrggbb", "R G B", "RRR GGG BBB"])
         self.color_save_format.setCurrentText(self._settings["color_save_format"])
         self.save_extension = QLineEdit(self._settings["save_extension"])
 

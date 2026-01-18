@@ -81,7 +81,7 @@ def normalize_settings(settings: Dict) -> Dict:
     if not isinstance(labels, list) or len(labels) != 16:
         normalized["color_labels"] = DEFAULT_LABELS
 
-    if normalized.get("color_save_format") not in ("#rrggbb", "R G B"):
+    if normalized.get("color_save_format") not in ("#rrggbb", "R G B", "RRR GGG BBB"):
         normalized["color_save_format"] = "#rrggbb"
 
     palette_extensions = normalized.get("palette_extensions")

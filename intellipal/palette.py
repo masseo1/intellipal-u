@@ -67,6 +67,8 @@ def format_color(color: ColorTuple, fmt: str) -> str:
     r, g, b = color
     if fmt == "#rrggbb":
         return f"#{r:02X}{g:02X}{b:02X}"
+    if fmt == "RRR GGG BBB":
+        return f"{r:03d} {g:03d} {b:03d}"
     return f"{r} {g} {b}"
 
 
