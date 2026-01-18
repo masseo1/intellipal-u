@@ -1,10 +1,10 @@
 # IntelliPal
 See https://github.com/evets17/intellipal/releases/latest for latest built release.
 
-IntelliPal is a palette-management and session helper for the jzIntv NES emulator. It provides a GUI for authoring and testing color palettes, managing game sessions, and interacting with an embedded emulator window for live previewing.
+IntelliPal is a palette-management and session helper for the jzIntv Intellivision emulator. It provides a GUI for authoring and testing color palettes, managing game sessions, and interacting with an embedded emulator window for live previewing.
 
 Key features
-- Palette editing: edit individual NES color entries, preview changes, and save/load palette files.
+- Palette editing: edit individual color entries, preview changes, and save/load palette files.
 - Session management: create and manage game sessions with session IDs, queue ROM loads, and control emulator pause/resume.
 - Embedded emulator preview: embed a jzIntv emulator window so keystrokes and input can be routed while the session dialog is active.
 - Color traffic lighting: visual indicators showing which game sessions are displaying which colors (configurable in the UI).
