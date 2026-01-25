@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import sys
+import shlex
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -160,6 +161,9 @@ class SettingsDialog(QDialog):
             self._settings.get("default_screenshot_res", "1x (320x200)")
         )
 
+        self.jzintv_flags = QLineEdit(self._settings.get("jzintv_flags", ""))
+        self.jzintv_flags.setPlaceholderText("(optional)")
+
         self.exec_file_path = QLineEdit(self._settings.get("exec_file_path", ".\\exec.bin"))
         exec_browse_btn = QToolButton()
         exec_browse_btn.setText("...")
@@ -235,6 +239,9 @@ class SettingsDialog(QDialog):
 
         session_layout.addRow("ROMs folder", roms_widget)
         session_layout.addRow("Emulator start resolution", self.emulator_start_res)
+        jzintv_flags_label = QLabel("JZINTV Flags")
+        jzintv_flags_label.setToolTip("Optional extra flags passed to jzintv_pal.exe when launching a Game Session.")
+        session_layout.addRow(jzintv_flags_label, self.jzintv_flags)
         session_layout.addRow("Default screenshot resolution", self.default_screenshot_res)
         session_layout.addRow("Game resolutions", self.game_resolutions)
         session_layout.addRow("Isolate background", isolate_widget)
@@ -271,6 +278,7 @@ class SettingsDialog(QDialog):
         self.start_dock_state.currentTextChanged.connect(lambda: self._apply())
         self.emulator_poll_rate.editingFinished.connect(self._apply)
         self.emulator_start_res.editingFinished.connect(self._apply)
+        self.jzintv_flags.editingFinished.connect(self._apply)
         self.default_screenshot_res.currentTextChanged.connect(lambda: self._apply())
         self.exec_file_path.editingFinished.connect(self._apply)
         self.grom_file_path.editingFinished.connect(self._apply)
@@ -371,6 +379,7 @@ class SettingsDialog(QDialog):
         isolate_background = self.isolate_background.text().strip() or "#000000"
         screenshot_path = self.screenshot_path.text().strip()
         default_screenshot_res = self.default_screenshot_res.currentText()
+        jzintv_flags = self.jzintv_flags.text().strip()
 
         self.error_label.setText("")
         new_settings = dict(self._settings)
@@ -387,6 +396,7 @@ class SettingsDialog(QDialog):
         new_settings["roms_folder"] = roms_folder
         new_settings["screenshot_path"] = screenshot_path
         new_settings["default_screenshot_res"] = default_screenshot_res
+        new_settings["jzintv_flags"] = jzintv_flags
         new_settings["color_labels"] = labels
         new_settings["game_resolutions"] = resolutions
         new_settings["isolate_background"] = isolate_background
@@ -537,6 +547,7 @@ class GameDialog(QMainWindow):
         self.process = QProcess(self)
         self.process.started.connect(self._on_process_started)
         self.process.finished.connect(self._on_process_finished)
+        self.process.errorOccurred.connect(self._on_process_error)
         self.process.readyReadStandardOutput.connect(self._on_process_stdout)
         self.process.readyReadStandardError.connect(self._on_process_stderr)
 
@@ -855,6 +866,13 @@ class GameDialog(QMainWindow):
         self.main_window._log_message(
             f"Launching emulator: exe={exe_path} exec={exec_path} grom={grom_path} shm={self.session.map_name} rom={rom_path}"
         )
+        jzintv_flags_text = (self.main_window.settings.get("jzintv_flags", "") or "").strip()
+        jzintv_flag_args: list[str] = []
+        if jzintv_flags_text:
+            try:
+                jzintv_flag_args = shlex.split(jzintv_flags_text, posix=os.name != "nt")
+            except ValueError:
+                jzintv_flag_args = [jzintv_flags_text]
         screenshot_dir_arg: str | None = None
         screenshot_path_value = (self.main_window.settings.get("screenshot_path", "") or "").strip()
         if screenshot_path_value:
@@ -874,6 +892,8 @@ class GameDialog(QMainWindow):
         )
         if screenshot_dir_arg:
             cmd_line += f"--screenshot-dir=\"{screenshot_dir_arg}\" "
+        if jzintv_flags_text:
+            cmd_line += f" {jzintv_flags_text} "
         cmd_line += f"\"{rom_path}\""
         self.main_window._log_message(f"Command line: {cmd_line}")
         self._stop_emulator()
@@ -887,6 +907,8 @@ class GameDialog(QMainWindow):
         ]
         if screenshot_dir_arg:
             args.append(f"--screenshot-dir={screenshot_dir_arg}")
+        if jzintv_flag_args:
+            args.extend(jzintv_flag_args)
         args.append(rom_path)
         self.process.setArguments(args)
         self.process.start()
@@ -956,6 +978,18 @@ class GameDialog(QMainWindow):
             rom_path = self._pending_rom_path
             self._pending_rom_path = None
             self._launch_emulator(rom_path)
+
+    def _on_process_error(self, error) -> None:
+        flags_text = (self.main_window.settings.get("jzintv_flags", "") or "").strip()
+        hint = ""
+        if flags_text:
+            hint = f"\n\nJZINTV Flags setting may be a cause: {flags_text}"
+        self.main_window._log_message(f"Emulator process error: {error}{hint}")
+        QMessageBox.warning(
+            self,
+            "Game Session",
+            f"Emulator failed to start or stopped unexpectedly.{hint}",
+        )
 
     def _on_process_stdout(self) -> None:
         try:

@@ -48,6 +48,7 @@ DEFAULT_SETTINGS = {
     "roms_folder": "",
     "screenshot_path": "./Screenshots",
     "default_screenshot_res": "1x (320x200)",
+    "jzintv_flags": "",
     "game_resolutions": [
         "320x240,8",
         "400x300,8",
@@ -140,6 +141,10 @@ def normalize_settings(settings: Dict) -> Dict:
     default_screenshot_res = normalized.get("default_screenshot_res")
     if default_screenshot_res not in SCREENSHOT_RES_OPTIONS:
         normalized["default_screenshot_res"] = DEFAULT_SETTINGS["default_screenshot_res"]
+
+    jzintv_flags = normalized.get("jzintv_flags")
+    if jzintv_flags is None or not isinstance(jzintv_flags, str):
+        normalized["jzintv_flags"] = DEFAULT_SETTINGS["jzintv_flags"]
 
     game_resolutions = normalized.get("game_resolutions")
     if not isinstance(game_resolutions, list) or len(game_resolutions) == 0:
