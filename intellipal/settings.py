@@ -26,6 +26,13 @@ DEFAULT_LABELS = [
     "Purple",
 ]
 
+SCREENSHOT_RES_OPTIONS = [
+    "1x (320x200)",
+    "2x (640x400)",
+    "3x (960x600)",
+    "4x (1280x800)",
+]
+
 DEFAULT_SETTINGS = {
     "palette_dir": "./palettes",
     "palette_extensions": ".cfg|.txt",
@@ -39,6 +46,8 @@ DEFAULT_SETTINGS = {
     "grom_file_path": "./grom.bin",
     "log_file": "",
     "roms_folder": "",
+    "screenshot_path": "./Screenshots",
+    "default_screenshot_res": "1x (320x200)",
     "game_resolutions": [
         "320x240,8",
         "400x300,8",
@@ -123,6 +132,14 @@ def normalize_settings(settings: Dict) -> Dict:
     roms_folder = normalized.get("roms_folder")
     if roms_folder is None or not isinstance(roms_folder, str):
         normalized["roms_folder"] = DEFAULT_SETTINGS["roms_folder"]
+
+    screenshot_path = normalized.get("screenshot_path")
+    if screenshot_path is None or not isinstance(screenshot_path, str):
+        normalized["screenshot_path"] = DEFAULT_SETTINGS["screenshot_path"]
+
+    default_screenshot_res = normalized.get("default_screenshot_res")
+    if default_screenshot_res not in SCREENSHOT_RES_OPTIONS:
+        normalized["default_screenshot_res"] = DEFAULT_SETTINGS["default_screenshot_res"]
 
     game_resolutions = normalized.get("game_resolutions")
     if not isinstance(game_resolutions, list) or len(game_resolutions) == 0:

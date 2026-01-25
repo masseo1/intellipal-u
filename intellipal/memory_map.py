@@ -8,7 +8,7 @@ from typing import Iterable, List
 
 MAP_SIZE = 0x0200
 MAGIC = b"JZPL"
-VERSION = 1
+VERSION = 3
 HEADER_SIZE = 16
 
 OFF_PALETTE_SEQ = 0x0010
@@ -27,6 +27,9 @@ OFF_LABEL1 = 0x0104
 OFF_LABEL2 = 0x0144
 OFF_DISPLAYED_COLORS = 0x0184
 OFF_EMULATOR_PAUSED = 0x01A4
+OFF_HEARTBEAT = 0x01A8
+OFF_SCALE_SCREENSHOT = 0x01AC
+OFF_SCREENSHOT_PREFIX = 0x01B0
 
 
 @dataclass
@@ -81,6 +84,12 @@ class SharedMemoryMap:
 
     def set_command(self, text: str) -> None:
         self._write_fixed_string(OFF_COMMAND, 32, text)
+
+    def set_scale_screenshot(self, value: int) -> None:
+        self._write_u32(OFF_SCALE_SCREENSHOT, value)
+
+    def set_screenshot_prefix(self, text: str) -> None:
+        self._write_fixed_string(OFF_SCREENSHOT_PREFIX, 32, text)
 
     def set_label1(self, text: str) -> None:
         self._write_fixed_string(OFF_LABEL1, 64, text)

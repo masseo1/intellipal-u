@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from .palette import parse_palette_file, update_palette_color, update_palette_file, write_palette_file
-from .settings import load_settings, save_settings, DEFAULT_LABELS
+from .settings import load_settings, save_settings, DEFAULT_LABELS, SCREENSHOT_RES_OPTIONS
 from .memory_map import SharedMemoryMap
 from .widgets import ColorControl
 try:
@@ -130,6 +130,17 @@ class SettingsDialog(QDialog):
         palette_dir_widget = QWidget()
         palette_dir_widget.setLayout(palette_dir_row)
 
+        self.screenshot_path = QLineEdit(self._settings.get("screenshot_path", "./Screenshots"))
+        screenshot_browse_btn = QToolButton()
+        screenshot_browse_btn.setText("...")
+        screenshot_browse_btn.clicked.connect(self._browse_screenshot_path)
+
+        screenshot_path_row = QHBoxLayout()
+        screenshot_path_row.addWidget(self.screenshot_path)
+        screenshot_path_row.addWidget(screenshot_browse_btn)
+        screenshot_path_widget = QWidget()
+        screenshot_path_widget.setLayout(screenshot_path_row)
+
         self.palette_extensions = QLineEdit(self._settings["palette_extensions"])
         self.color_save_format = QComboBox()
         self.color_save_format.addItems(["#rrggbb", "R G B", "RRR GGG BBB"])
@@ -142,6 +153,12 @@ class SettingsDialog(QDialog):
 
         self.emulator_poll_rate = QLineEdit(str(self._settings.get("emulator_poll_rate", 10)))
         self.emulator_start_res = QLineEdit(self._settings.get("emulator_start_res", "1024x768,8"))
+
+        self.default_screenshot_res = QComboBox()
+        self.default_screenshot_res.addItems(SCREENSHOT_RES_OPTIONS)
+        self.default_screenshot_res.setCurrentText(
+            self._settings.get("default_screenshot_res", "1x (320x200)")
+        )
 
         self.exec_file_path = QLineEdit(self._settings.get("exec_file_path", ".\\exec.bin"))
         exec_browse_btn = QToolButton()
@@ -205,6 +222,7 @@ class SettingsDialog(QDialog):
         self.error_label.setStyleSheet("color: #b00020;")
 
         general_layout.addRow("Palette folder", palette_dir_widget)
+        general_layout.addRow("Screenshot folder", screenshot_path_widget)
         general_layout.addRow("Palette extensions", self.palette_extensions)
         general_layout.addRow("Color save format", self.color_save_format)
         general_layout.addRow("Save extension", self.save_extension)
@@ -217,6 +235,7 @@ class SettingsDialog(QDialog):
 
         session_layout.addRow("ROMs folder", roms_widget)
         session_layout.addRow("Emulator start resolution", self.emulator_start_res)
+        session_layout.addRow("Default screenshot resolution", self.default_screenshot_res)
         session_layout.addRow("Game resolutions", self.game_resolutions)
         session_layout.addRow("Isolate background", isolate_widget)
 
@@ -245,12 +264,14 @@ class SettingsDialog(QDialog):
         layout.addWidget(button_widget)
 
         self.palette_dir.editingFinished.connect(self._apply)
+        self.screenshot_path.editingFinished.connect(self._apply)
         self.palette_extensions.editingFinished.connect(self._apply)
         self.color_save_format.currentTextChanged.connect(lambda: self._apply())
         self.save_extension.editingFinished.connect(self._apply)
         self.start_dock_state.currentTextChanged.connect(lambda: self._apply())
         self.emulator_poll_rate.editingFinished.connect(self._apply)
         self.emulator_start_res.editingFinished.connect(self._apply)
+        self.default_screenshot_res.currentTextChanged.connect(lambda: self._apply())
         self.exec_file_path.editingFinished.connect(self._apply)
         self.grom_file_path.editingFinished.connect(self._apply)
         self.log_file_path.editingFinished.connect(self._apply)
@@ -263,6 +284,12 @@ class SettingsDialog(QDialog):
         directory = QFileDialog.getExistingDirectory(self, "Select Palette Folder")
         if directory:
             self.palette_dir.setText(directory)
+            self._apply()
+
+    def _browse_screenshot_path(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select Screenshot Folder")
+        if directory:
+            self.screenshot_path.setText(directory)
             self._apply()
 
     def _browse_exec_file(self):
@@ -342,6 +369,8 @@ class SettingsDialog(QDialog):
         log_file = self.log_file_path.text().strip()
         roms_folder = self.roms_folder_path.text().strip()
         isolate_background = self.isolate_background.text().strip() or "#000000"
+        screenshot_path = self.screenshot_path.text().strip()
+        default_screenshot_res = self.default_screenshot_res.currentText()
 
         self.error_label.setText("")
         new_settings = dict(self._settings)
@@ -356,6 +385,8 @@ class SettingsDialog(QDialog):
         new_settings["grom_file_path"] = grom_path
         new_settings["log_file"] = log_file
         new_settings["roms_folder"] = roms_folder
+        new_settings["screenshot_path"] = screenshot_path
+        new_settings["default_screenshot_res"] = default_screenshot_res
         new_settings["color_labels"] = labels
         new_settings["game_resolutions"] = resolutions
         new_settings["isolate_background"] = isolate_background
@@ -519,6 +550,7 @@ class GameDialog(QMainWindow):
 
         game_menu = QMenu("Game", self)
         reference_menu = QMenu("Reference", self)
+        self.screenshot_menu = QMenu("Screenshot", self)
         self.menuBar().setVisible(False)
 
         menu_toolbar = QToolBar()
@@ -536,6 +568,12 @@ class GameDialog(QMainWindow):
         reference_menu_button.setPopupMode(QToolButton.InstantPopup)
         reference_menu_button.setMenu(reference_menu)
         reference_menu_button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
+
+        self.screenshot_menu_button = QToolButton()
+        self.screenshot_menu_button.setText("Screenshot")
+        self.screenshot_menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.screenshot_menu_button.setMenu(self.screenshot_menu)
+        self.screenshot_menu_button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
 
         menu_container = QWidget()
         menu_layout = QHBoxLayout(menu_container)
@@ -559,6 +597,7 @@ class GameDialog(QMainWindow):
         slider_layout.setSpacing(0)
         slider_layout.addWidget(self.ref_split_slider, alignment=Qt.AlignVCenter)
         menu_layout.addWidget(self.ref_split_slider_container, alignment=Qt.AlignVCenter)
+        menu_layout.addWidget(self.screenshot_menu_button, alignment=Qt.AlignVCenter)
         menu_layout.addStretch(1)
 
         self.session_id_value = f"{session.session_id:02d}"
@@ -580,16 +619,14 @@ class GameDialog(QMainWindow):
         close_action = QAction("Close", self)
         reset_action = QAction("Reset Game", self)
         self.pause_action = QAction("Pause Game", self)
-        screenshot_action = QAction("Screenshot", self)
 
         load_action.triggered.connect(self._load_game)
         quit_action.triggered.connect(lambda: self._send_command("QUIT"))
         close_action.triggered.connect(self.close)
         reset_action.triggered.connect(lambda: self._send_command("RESET"))
         self.pause_action.triggered.connect(lambda: self._send_command("PAUSE"))
-        screenshot_action.triggered.connect(lambda: self._send_command("SCREENSHOT"))
 
-        for action in (load_action, quit_action, reset_action, self.pause_action, screenshot_action, close_action):
+        for action in (load_action, quit_action, reset_action, self.pause_action, close_action):
             game_menu.addAction(action)
 
         self.ref_palette_combo = QComboBox()
@@ -620,6 +657,43 @@ class GameDialog(QMainWindow):
         reference_action = QWidgetAction(self)
         reference_action.setDefaultWidget(reference_widget)
         reference_menu.addAction(reference_action)
+
+        self.screenshot_res_combo = QComboBox()
+        self.screenshot_res_combo.addItems(SCREENSHOT_RES_OPTIONS)
+        default_screenshot_res = self.main_window.settings.get("default_screenshot_res", "1x (320x200)")
+        if default_screenshot_res not in SCREENSHOT_RES_OPTIONS:
+            default_screenshot_res = SCREENSHOT_RES_OPTIONS[0]
+        self.screenshot_res_combo.setCurrentText(default_screenshot_res)
+        self.screenshot_res_combo.currentTextChanged.connect(self._on_screenshot_resolution_changed)
+
+        self.screenshot_prefix_label = QLabel("")
+        self.screenshot_prefix_label.setMinimumWidth(140)
+        self.screenshot_prefix_label.setToolTip("Screenshot file prefix")
+
+        self.edit_screenshot_prefix_button = QPushButton("Edit Prefix")
+        self.edit_screenshot_prefix_button.clicked.connect(self._on_edit_screenshot_prefix)
+
+        self.take_screenshot_button = QPushButton("Take Screenshot")
+        self.take_screenshot_button.clicked.connect(lambda: self._send_command("SCREENSHOT"))
+
+        screenshot_widget = QWidget()
+        screenshot_layout = QVBoxLayout(screenshot_widget)
+        screenshot_layout.setContentsMargins(8, 6, 8, 6)
+        screenshot_layout.setSpacing(6)
+        screenshot_layout.addWidget(QLabel("Resolution"))
+        screenshot_layout.addWidget(self.screenshot_res_combo)
+        screenshot_layout.addWidget(QLabel("File Prefix"))
+        screenshot_layout.addWidget(self.screenshot_prefix_label)
+        screenshot_layout.addWidget(self.edit_screenshot_prefix_button)
+        screenshot_layout.addWidget(self.take_screenshot_button)
+
+        screenshot_action = QWidgetAction(self)
+        screenshot_action.setDefaultWidget(screenshot_widget)
+        self.screenshot_menu.addAction(screenshot_action)
+
+        self._screenshot_menu_open = False
+        self.screenshot_menu.aboutToShow.connect(self._on_screenshot_menu_opened)
+        self.screenshot_menu.aboutToHide.connect(self._on_screenshot_menu_closed)
 
         self.ref_status_label = ElideLabel("")
         self.ref_status_label.setToolTip("")
@@ -661,6 +735,7 @@ class GameDialog(QMainWindow):
         central_layout.addLayout(status_row)
         self.setCentralWidget(central)
 
+        self._init_screenshot_controls()
         self._update_reference_controls(enabled=False)
 
     def _load_game(self) -> None:
@@ -689,6 +764,72 @@ class GameDialog(QMainWindow):
         else:
             self.pause_action.setText("Pause Game")
 
+    def _init_screenshot_controls(self) -> None:
+        self._screenshot_prefix_updating = False
+        default_prefix = self._default_screenshot_prefix(self.session_id_value)
+        self._screenshot_prefix_value = default_prefix
+        self._update_screenshot_prefix_label()
+        try:
+            self._write_screenshot_scale(self.screenshot_res_combo.currentText())
+            self._write_screenshot_prefix(default_prefix)
+        except Exception as exc:
+            self._set_screenshot_controls_enabled(False)
+            self.main_window._log_message(f"Screenshot controls disabled: {exc}")
+
+    def _set_screenshot_controls_enabled(self, enabled: bool) -> None:
+        self.screenshot_menu_button.setEnabled(enabled)
+        self.screenshot_res_combo.setEnabled(enabled)
+        self.screenshot_prefix_label.setEnabled(enabled)
+        self.edit_screenshot_prefix_button.setEnabled(enabled)
+        self.take_screenshot_button.setEnabled(enabled)
+
+    def _default_screenshot_prefix(self, session_id_value: str) -> str:
+        return f"{session_id_value}_"
+
+    def _screenshot_scale_from_text(self, value: str) -> int:
+        try:
+            base = value.split("x", 1)[0].strip()
+            parsed = int(base)
+            return parsed if parsed > 0 else 1
+        except Exception:
+            return 1
+
+    def _write_screenshot_scale(self, value: str) -> None:
+        scale = self._screenshot_scale_from_text(value)
+        self.session.memory_map.set_scale_screenshot(scale)
+
+    def _write_screenshot_prefix(self, value: str) -> None:
+        self.session.memory_map.set_screenshot_prefix(value)
+
+    def _on_screenshot_resolution_changed(self, value: str) -> None:
+        try:
+            self._write_screenshot_scale(value)
+        except Exception as exc:
+            self._set_screenshot_controls_enabled(False)
+            self.main_window._log_message(f"Failed to set screenshot scale: {exc}")
+
+    def _update_screenshot_prefix_label(self) -> None:
+        self.screenshot_prefix_label.setText(self._screenshot_prefix_value)
+
+    def _on_edit_screenshot_prefix(self) -> None:
+        current_value = self._screenshot_prefix_value
+        text, ok = QInputDialog.getText(
+            self,
+            "Screenshot Prefix",
+            "Enter screenshot prefix (max 20 chars):",
+            text=current_value,
+        )
+        if not ok:
+            return
+        new_value = (text or "")[:20]
+        self._screenshot_prefix_value = new_value
+        self._update_screenshot_prefix_label()
+        try:
+            self._write_screenshot_prefix(new_value)
+        except Exception as exc:
+            self._set_screenshot_controls_enabled(False)
+            self.main_window._log_message(f"Failed to set screenshot prefix: {exc}")
+
     def _launch_emulator(self, rom_path: str) -> None:
         exe_path = self.main_window._get_emulator_path()
         if exe_path is None:
@@ -714,24 +855,40 @@ class GameDialog(QMainWindow):
         self.main_window._log_message(
             f"Launching emulator: exe={exe_path} exec={exec_path} grom={grom_path} shm={self.session.map_name} rom={rom_path}"
         )
+        screenshot_dir_arg: str | None = None
+        screenshot_path_value = (self.main_window.settings.get("screenshot_path", "") or "").strip()
+        if screenshot_path_value:
+            target_path = Path(screenshot_path_value)
+            if not target_path.is_absolute():
+                target_path = (Path.cwd() / target_path).resolve()
+            try:
+                target_path.mkdir(parents=True, exist_ok=True)
+                screenshot_dir_arg = str(target_path)
+            except Exception as exc:
+                self.main_window._log_message(f"Screenshot path unavailable, using CWD: {exc}")
+
         cmd_line = (
             f"\"{exe_path}\" --shm-name=\"{self.session.map_name}\" "
             f"--execimg=\"{exec_path}\" --gromimg=\"{grom_path}\" "
-            f"--displaysize=\"{display_size}\" \"{rom_path}\""
+            f"--displaysize=\"{display_size}\" "
         )
+        if screenshot_dir_arg:
+            cmd_line += f"--screenshot-dir=\"{screenshot_dir_arg}\" "
+        cmd_line += f"\"{rom_path}\""
         self.main_window._log_message(f"Command line: {cmd_line}")
         self._stop_emulator()
         self._set_status_base("Launching emulator...")
         self.process.setProgram(str(exe_path))
-        self.process.setArguments(
-            [
-                f"--shm-name={self.session.map_name}",
-                f"--execimg={exec_path}",
-                f"--gromimg={grom_path}",
-                f"--displaysize={display_size}",
-                rom_path,
-            ]
-        )
+        args = [
+            f"--shm-name={self.session.map_name}",
+            f"--execimg={exec_path}",
+            f"--gromimg={grom_path}",
+            f"--displaysize={display_size}",
+        ]
+        if screenshot_dir_arg:
+            args.append(f"--screenshot-dir={screenshot_dir_arg}")
+        args.append(rom_path)
+        self.process.setArguments(args)
         self.process.start()
 
     def _dpi_scale(self) -> float:
@@ -850,6 +1007,8 @@ class GameDialog(QMainWindow):
         self.status_label.setStyleSheet(f"color: {color};")
 
     def _focus_emulator_window(self) -> None:
+        if getattr(self, "_screenshot_menu_open", False):
+            return
         if not self._embedded_window_hwnd or os.name != "nt":
             return
         try:
@@ -860,6 +1019,15 @@ class GameDialog(QMainWindow):
             user32.SetFocus(self._embedded_window_hwnd)
         except Exception:
             return
+
+    def _on_screenshot_menu_opened(self) -> None:
+        self._screenshot_menu_open = True
+        self._update_status_focus()
+
+    def _on_screenshot_menu_closed(self) -> None:
+        self._screenshot_menu_open = False
+        self._focus_emulator_window()
+        self._update_status_focus()
 
     def _on_session_id_clicked(self, event) -> None:
         current_value = self.session_id_value
@@ -875,7 +1043,23 @@ class GameDialog(QMainWindow):
                 new_value = f"{self.session.session_id:02d}"
             self.session_id_value = new_value
             self.session_id_label.setText(new_value)
+            self._maybe_update_screenshot_prefix(current_value, new_value)
             self.main_window._update_traffic_lights()
+
+    def _maybe_update_screenshot_prefix(self, old_session_id: str, new_session_id: str) -> None:
+        if not hasattr(self, "screenshot_prefix_label"):
+            return
+        old_default = self._default_screenshot_prefix(old_session_id)
+        if getattr(self, "_screenshot_prefix_value", "") != old_default:
+            return
+        new_default = self._default_screenshot_prefix(new_session_id)
+        self._screenshot_prefix_value = new_default
+        self._update_screenshot_prefix_label()
+        try:
+            self._write_screenshot_prefix(new_default)
+        except Exception as exc:
+            self._set_screenshot_controls_enabled(False)
+            self.main_window._log_message(f"Failed to update screenshot prefix: {exc}")
 
     def _try_embed_window(self) -> None:
         if self._embedded:
