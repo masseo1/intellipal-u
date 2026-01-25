@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 import sys
 import shlex
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -73,6 +74,9 @@ class GameSession:
     memory_map: SharedMemoryMap
     displayed_colors: List[int]
     emulator_paused: bool
+    last_heartbeat: int = 0
+    last_heartbeat_time: float = 0.0
+    is_unresponsive: bool = False
     dialog: "GameDialog | None" = None
 
 
@@ -632,8 +636,8 @@ class GameDialog(QMainWindow):
         self.pause_action = QAction("Pause Game", self)
 
         load_action.triggered.connect(self._load_game)
-        quit_action.triggered.connect(lambda: self._send_command("QUIT"))
-        close_action.triggered.connect(self.close)
+        quit_action.triggered.connect(self._quit_game)
+        close_action.triggered.connect(self._close_session)
         reset_action.triggered.connect(lambda: self._send_command("RESET"))
         self.pause_action.triggered.connect(lambda: self._send_command("PAUSE"))
 
@@ -715,6 +719,7 @@ class GameDialog(QMainWindow):
         self.status_label.setStyleSheet("color: #b00020;")
         self.status_label.setAlignment(Qt.AlignRight)
         self._status_base_text = "Emulator not running."
+        self._unresponsive_override = False
         self._update_status_focus()
 
         # Container for embedded window
@@ -760,12 +765,27 @@ class GameDialog(QMainWindow):
         if not rom_path:
             return
         if self.process.state() != QProcess.NotRunning:
+            if self.session.is_unresponsive:
+                self._force_kill_emulator("Load Game")
+                self._launch_emulator(rom_path)
+                return
             self._pending_rom_path = rom_path
             self._send_command("QUIT")
             self._stop_emulator()
             self._set_status_base("Waiting for emulator to quit...")
             return
         self._launch_emulator(rom_path)
+
+    def _quit_game(self) -> None:
+        if self.session.is_unresponsive:
+            self._force_kill_emulator("Quit Game")
+            return
+        self._send_command("QUIT")
+
+    def _close_session(self) -> None:
+        if self.session.is_unresponsive:
+            self._force_kill_emulator("Close")
+        self.close()
 
     def _sync_pause_action(self) -> None:
         if not hasattr(self, "pause_action"):
@@ -962,6 +982,9 @@ class GameDialog(QMainWindow):
         self._embedded = False
         self._embed_timer.stop()
         self._embedded_window_hwnd = None
+        if self.session.is_unresponsive:
+            self.session.is_unresponsive = False
+            self._set_unresponsive_state(False)
         self._set_status_base("Emulator not running.")
 
     def _on_process_started(self) -> None:
@@ -973,11 +996,28 @@ class GameDialog(QMainWindow):
         exit_status = self.process.exitStatus()
         self.main_window._log_message(f"Emulator exited: code={exit_code} status={exit_status}")
         self._set_status_base("Emulator not running.")
+        if self.session.is_unresponsive:
+            self.session.is_unresponsive = False
+            self._set_unresponsive_state(False)
+        self.session.last_heartbeat = 0
+        self.session.last_heartbeat_time = 0.0
         self._embed_timer.stop()
         if self._pending_rom_path:
             rom_path = self._pending_rom_path
             self._pending_rom_path = None
             self._launch_emulator(rom_path)
+
+    def _force_kill_emulator(self, action: str) -> None:
+        if self.process.state() == QProcess.NotRunning:
+            return
+        self.main_window._log_message(f"Force killing emulator due to unresponsive state ({action}).")
+        self.process.kill()
+        self.process.waitForFinished(2000)
+        self._stop_emulator()
+
+    def _set_unresponsive_state(self, is_unresponsive: bool) -> None:
+        self._unresponsive_override = is_unresponsive
+        self._update_status_focus()
 
     def _on_process_error(self, error) -> None:
         flags_text = (self.main_window.settings.get("jzintv_flags", "") or "").strip()
@@ -1031,6 +1071,10 @@ class GameDialog(QMainWindow):
         self._update_status_focus()
 
     def _update_status_focus(self) -> None:
+        if getattr(self, "_unresponsive_override", False):
+            self.status_label.setText("Emulator unresponsive.")
+            self.status_label.setStyleSheet("color: #b00020;")
+            return
         if self.isActiveWindow():
             suffix = " Input Ready"
             color = "#1b5e20"
@@ -1482,6 +1526,7 @@ class MainWindow(QMainWindow):
         self.reset_btn = QToolButton()
         self.open_file_btn = QToolButton()
         self.rename_file_btn = QToolButton()
+        self.refresh_btn = QToolButton()
 
         icon = self._load_icon("save")
         self.save_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_DialogSaveButton))
@@ -1489,12 +1534,13 @@ class MainWindow(QMainWindow):
         self.save_as_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_DialogSaveButton))
         icon = self._load_icon("reset")
         self.reset_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.refresh_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_BrowserReload))
         icon = self._load_icon("view")
         self.open_file_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_DirOpenIcon))
         icon = self._load_icon("rename")
         self.rename_file_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
 
-        for btn in (self.save_btn, self.save_as_btn, self.reset_btn, self.open_file_btn, self.rename_file_btn):
+        for btn in (self.save_btn, self.save_as_btn, self.reset_btn, self.open_file_btn, self.rename_file_btn, self.refresh_btn):
             btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
 
         self.save_btn.setToolTip("Save changes")
@@ -1502,12 +1548,14 @@ class MainWindow(QMainWindow):
         self.reset_btn.setToolTip("Reset to on-disk values")
         self.open_file_btn.setToolTip("Open palette file in default editor")
         self.rename_file_btn.setToolTip("Rename selected palette")
+        self.refresh_btn.setToolTip("Refresh palette list")
 
         self.save_btn.clicked.connect(self._save_palette)
         self.save_as_btn.clicked.connect(self._save_as_palette)
         self.reset_btn.clicked.connect(self._reset_palette)
         self.open_file_btn.clicked.connect(self._open_palette_file)
         self.rename_file_btn.clicked.connect(self._rename_palette)
+        self.refresh_btn.clicked.connect(self._refresh_palette_list)
 
         file_controls = QHBoxLayout()
         file_controls.setSpacing(2)
@@ -1540,6 +1588,7 @@ class MainWindow(QMainWindow):
         palette_header.setContentsMargins(0, 0, 0, 0)
         palette_header.addWidget(palettes_label)
         palette_header.addStretch()
+        palette_header.addWidget(self.refresh_btn)
         palette_header.addWidget(self.open_folder_btn)
 
         selected_content = QWidget()
@@ -1795,12 +1844,42 @@ class MainWindow(QMainWindow):
             try:
                 session.displayed_colors = session.memory_map.read_displayed_colors()
                 session.emulator_paused = session.memory_map.read_emulator_paused()
+                self._update_session_heartbeat(session)
                 if session.dialog is not None:
                     session.dialog._sync_pause_action()
             except Exception:
                 continue
         if self.traffic_lighting_checkbox.isChecked():
             self._update_traffic_lights()
+
+    def _update_session_heartbeat(self, session: GameSession) -> None:
+        if session.dialog is None:
+            return
+        if session.dialog.process.state() == QProcess.NotRunning:
+            if session.is_unresponsive:
+                session.is_unresponsive = False
+                session.dialog._set_unresponsive_state(False)
+            session.last_heartbeat_time = 0.0
+            return
+        try:
+            heartbeat = session.memory_map.read_heartbeat()
+        except Exception:
+            heartbeat = None
+        now = time.monotonic()
+        if heartbeat is not None and heartbeat != session.last_heartbeat:
+            session.last_heartbeat = heartbeat
+            session.last_heartbeat_time = now
+            if session.is_unresponsive:
+                session.is_unresponsive = False
+                session.dialog._set_unresponsive_state(False)
+            return
+        if session.last_heartbeat_time == 0.0:
+            session.last_heartbeat_time = now
+            return
+        if now - session.last_heartbeat_time > 6.0:
+            if not session.is_unresponsive:
+                session.is_unresponsive = True
+                session.dialog._set_unresponsive_state(True)
 
     def _update_traffic_lights(self) -> None:
         if not self.traffic_lighting_checkbox.isChecked():
@@ -2322,6 +2401,67 @@ class MainWindow(QMainWindow):
         state.dirty = False
         self._apply_palette_state(state)
         self._update_palette_indicator(self.current_palette_id, state)
+
+    def _refresh_palette_list(self) -> None:
+        self._save_current_state(self.current_palette_id)
+        dirty_states = [state for state in self.palette_states.values() if state.dirty]
+        if dirty_states:
+            prompt = QMessageBox(self)
+            prompt.setWindowTitle("Refresh Palettes")
+            prompt.setText("You have unsaved palette changes.")
+            save_btn = prompt.addButton("Save Changes", QMessageBox.AcceptRole)
+            discard_btn = prompt.addButton("Discard Changes", QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn = prompt.addButton("Cancel", QMessageBox.RejectRole)
+            prompt.setDefaultButton(save_btn)
+            prompt.exec()
+            clicked = prompt.clickedButton()
+            if clicked == cancel_btn:
+                return
+            if clicked == save_btn:
+                if not self._save_all_dirty_palettes():
+                    return
+
+        self._load_palette_list()
+        self._refresh_reference_palettes()
+
+    def _save_all_dirty_palettes(self) -> bool:
+        for palette_id, state in self.palette_states.items():
+            if not state.dirty or state.invalid or not state.path:
+                continue
+            if state.name == "Default":
+                continue
+            try:
+                update_palette_file(state.path, state.colors, self.settings.get("color_save_format", "#rrggbb"))
+            except Exception as exc:
+                QMessageBox.warning(self, "Save", str(exc))
+                return False
+            state.base_colors = state.colors[:]
+            state.dirty_colors = [False] * len(state.colors)
+            state.dirty = False
+            self._update_palette_indicator(palette_id, state)
+        self.pending_label.setText("")
+        self.save_btn.setEnabled(False)
+        return True
+
+    def _refresh_reference_palettes(self) -> None:
+        options = [name for name, _ in self._get_palette_options()]
+        for session in self.game_sessions:
+            dialog = session.dialog
+            if dialog is None:
+                continue
+            current = dialog.ref_palette_combo.currentText()
+            dialog.ref_palette_combo.blockSignals(True)
+            dialog.ref_palette_combo.clear()
+            dialog.ref_palette_combo.addItem("<none>")
+            for name in options:
+                dialog.ref_palette_combo.addItem(name)
+            dialog.ref_palette_combo.blockSignals(False)
+            if current in options:
+                dialog.ref_palette_combo.setCurrentText(current)
+                dialog._on_ref_palette_changed(current)
+            else:
+                dialog.ref_palette_combo.setCurrentText("<none>")
+                dialog._on_ref_palette_changed("<none>")
 
     def _current_state(self) -> PaletteState | None:
         if not self.current_palette_id:

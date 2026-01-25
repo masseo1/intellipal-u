@@ -114,6 +114,9 @@ class SharedMemoryMap:
     def read_emulator_paused(self) -> bool:
         return bool(self._read_u32(OFF_EMULATOR_PAUSED))
 
+    def read_heartbeat(self) -> int:
+        return self._read_u32(OFF_HEARTBEAT)
+
     def _write_palette(self, seq_off: int, dirty_off: int, colors_off: int, colors: Iterable[int]) -> None:
         mm = self._require_map()
         desired = [c & 0xFFFFFF for c in colors]
