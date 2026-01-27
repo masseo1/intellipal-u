@@ -240,12 +240,12 @@ class SettingsDialog(QDialog):
         emulator_layout.addRow("Emulator poll rate", self.emulator_poll_rate)
         emulator_layout.addRow("Exec file path", exec_widget)
         emulator_layout.addRow("GROM file path", grom_widget)
+        jzintv_flags_label = QLabel("JZINTV Flags")
+        jzintv_flags_label.setToolTip("Optional extra flags passed to jzintv_pal.exe when launching a Game Session.")
+        emulator_layout.addRow(jzintv_flags_label, self.jzintv_flags)
 
         session_layout.addRow("ROMs folder", roms_widget)
         session_layout.addRow("Emulator start resolution", self.emulator_start_res)
-        jzintv_flags_label = QLabel("JZINTV Flags")
-        jzintv_flags_label.setToolTip("Optional extra flags passed to jzintv_pal.exe when launching a Game Session.")
-        session_layout.addRow(jzintv_flags_label, self.jzintv_flags)
         session_layout.addRow("Default screenshot resolution", self.default_screenshot_res)
         session_layout.addRow("Game resolutions", self.game_resolutions)
         session_layout.addRow("Isolate background", isolate_widget)
@@ -2275,7 +2275,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Rename", "Default palette cannot be renamed.")
             return
 
-        new_name, ok = QInputDialog.getText(self, "Rename Palette", "New name:")
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Palette",
+            "New name:",
+            text=state.name,
+        )
         if not ok or not new_name.strip():
             return
 
@@ -2355,13 +2360,24 @@ class MainWindow(QMainWindow):
         if not state:
             return
 
-        base_name, ok = QInputDialog.getText(self, "Save As", "New palette name:")
+        default_extension = self.settings.get("save_extension", ".txt")
+        base_name, ok = QInputDialog.getText(
+            self,
+            "Save As",
+            f"New palette name (default {default_extension}):",
+        )
         if not ok or not base_name.strip():
             return
 
-        save_extension = self.settings.get("save_extension", ".txt")
-        base_name = Path(base_name.strip()).stem
-        new_path = self._palette_dir() / f"{base_name}{save_extension}"
+        save_extension = default_extension
+        valid_extensions = self._palette_extensions()
+        base_name = base_name.strip()
+        provided_ext = Path(base_name).suffix
+        if provided_ext and provided_ext.lower() in valid_extensions:
+            filename = Path(base_name).name
+        else:
+            filename = f"{Path(base_name).stem}{save_extension}"
+        new_path = self._palette_dir() / filename
         if new_path.exists():
             QMessageBox.warning(self, "Save As", "A file with that name already exists.")
             return
