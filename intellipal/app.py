@@ -55,6 +55,10 @@ except Exception:
 
 ColorTuple = Tuple[int, int, int]
 
+HEARTBEAT_UNRESPONSIVE_SECONDS = 6.0
+WAKE_KEY_RETRY_INTERVAL_MS = 200
+WAKE_KEY_MAX_SECONDS = 2.5
+
 
 @dataclass
 class PaletteState:
@@ -511,7 +515,8 @@ class GameDialog(QMainWindow):
         self.session = session
         self.main_window = main_window
         self.resolution = resolution
-        self.setWindowTitle(f"Game Session {session.session_id}")
+        self._rom_title = None
+        self._update_window_title()
         try:
             icon_path = Path(__file__).resolve().parents[1] / "resources" / "game.svg"
             if icon_path.exists():
@@ -559,9 +564,11 @@ class GameDialog(QMainWindow):
         self._embed_timer.setInterval(250)
         self._embed_timer.timeout.connect(self._try_embed_window)
         self._embedded = False
-        self._rom_title: str | None = None
         self._embedded_window_hwnd: int | None = None
         self._pending_rom_path: str | None = None
+        self._wake_pending = False
+        self._wake_deadline = 0.0
+        self._wake_baseline_heartbeat: int | None = None
 
         game_menu = QMenu("Game", self)
         reference_menu = QMenu("Reference", self)
@@ -867,6 +874,7 @@ class GameDialog(QMainWindow):
             QMessageBox.warning(self, "Launch", "jzintv_pal executable not found.")
             self.main_window._log_message("Launch failed: jzintv_pal executable not found.")
             return
+        self._stop_emulator()
         exec_path = self._exec_path()
         grom_path = self._grom_path()
         display_size = self._current_display_size()
@@ -875,6 +883,7 @@ class GameDialog(QMainWindow):
             self._rom_title = Path(rom_path).stem
         except Exception:
             self._rom_title = None
+        self._update_window_title()
         if not exec_path or not exec_path.exists():
             self.main_window._log_message(f"Launch failed: exec.bin not found at {exec_path}")
             QMessageBox.warning(self, "Launch", "Exec file path is missing or invalid.")
@@ -916,7 +925,6 @@ class GameDialog(QMainWindow):
             cmd_line += f" {jzintv_flags_text} "
         cmd_line += f"\"{rom_path}\""
         self.main_window._log_message(f"Command line: {cmd_line}")
-        self._stop_emulator()
         self._set_status_base("Launching emulator...")
         self.process.setProgram(str(exe_path))
         args = [
@@ -982,6 +990,8 @@ class GameDialog(QMainWindow):
         self._embedded = False
         self._embed_timer.stop()
         self._embedded_window_hwnd = None
+        self._rom_title = None
+        self._update_window_title()
         if self.session.is_unresponsive:
             self.session.is_unresponsive = False
             self._set_unresponsive_state(False)
@@ -1001,6 +1011,8 @@ class GameDialog(QMainWindow):
             self._set_unresponsive_state(False)
         self.session.last_heartbeat = 0
         self.session.last_heartbeat_time = 0.0
+        self._rom_title = None
+        self._update_window_title()
         self._embed_timer.stop()
         if self._pending_rom_path:
             rom_path = self._pending_rom_path
@@ -1052,6 +1064,7 @@ class GameDialog(QMainWindow):
     def focusInEvent(self, event):
         super().focusInEvent(event)
         self._focus_emulator_window()
+        self._maybe_wake_on_focus()
         self._update_status_focus()
 
     def focusOutEvent(self, event):
@@ -1061,6 +1074,7 @@ class GameDialog(QMainWindow):
     def event(self, event):
         if event.type() == QEvent.WindowActivate:
             self._focus_emulator_window()
+            self._maybe_wake_on_focus()
             self._update_status_focus()
         elif event.type() == QEvent.WindowDeactivate:
             self._update_status_focus()
@@ -1072,7 +1086,7 @@ class GameDialog(QMainWindow):
 
     def _update_status_focus(self) -> None:
         if getattr(self, "_unresponsive_override", False):
-            self.status_label.setText("Emulator unresponsive.")
+            self.status_label.setText("Game In Sleep Mode-Press Up arrow to wake up")
             self.status_label.setStyleSheet("color: #b00020;")
             return
         if self.isActiveWindow():
@@ -1097,6 +1111,203 @@ class GameDialog(QMainWindow):
             user32.SetFocus(self._embedded_window_hwnd)
         except Exception:
             return
+
+    def _maybe_wake_on_focus(self) -> None:
+        if not self.session.is_unresponsive:
+            return
+        if not self.isActiveWindow():
+            return
+        if self._wake_pending:
+            self.main_window._log_message(
+                f"Session {self.session.session_id} wake already pending."
+            )
+            return
+        self._wake_pending = True
+        self.main_window._log_message(
+            f"Session {self.session.session_id} focus wake scheduled."
+        )
+        QTimer.singleShot(150, self._send_wake_key_delayed)
+
+    def _send_wake_key_delayed(self) -> None:
+        self._wake_pending = False
+        if not self.session.is_unresponsive:
+            self.main_window._log_message(
+                f"Session {self.session.session_id} wake canceled (no longer sleeping)."
+            )
+            return
+        if not self.isActiveWindow():
+            self.main_window._log_message(
+                f"Session {self.session.session_id} wake canceled (not active)."
+            )
+            return
+        self._focus_emulator_window()
+        self.main_window._log_message(
+            f"Session {self.session.session_id} sending wake key (Up arrow)."
+        )
+        self._start_wake_cycle()
+
+    def _start_wake_cycle(self) -> None:
+        self._wake_deadline = time.monotonic() + WAKE_KEY_MAX_SECONDS
+        self._wake_baseline_heartbeat = None
+        try:
+            self._wake_baseline_heartbeat = self.session.memory_map.read_heartbeat()
+        except Exception:
+            self._wake_baseline_heartbeat = None
+        self._wake_cycle_step()
+
+    def _wake_cycle_step(self) -> None:
+        if not self.session.is_unresponsive or not self.isActiveWindow():
+            return
+        if time.monotonic() > self._wake_deadline:
+            self.main_window._log_message(
+                f"Session {self.session.session_id} wake attempts timed out."
+            )
+            return
+
+        current_heartbeat: int | None = None
+        try:
+            current_heartbeat = self.session.memory_map.read_heartbeat()
+        except Exception:
+            current_heartbeat = None
+
+        if (
+            self._wake_baseline_heartbeat is not None
+            and current_heartbeat is not None
+            and current_heartbeat != self._wake_baseline_heartbeat
+        ):
+            self.main_window._log_message(
+                f"Session {self.session.session_id} woke up (heartbeat resumed)."
+            )
+            return
+        if self._wake_baseline_heartbeat is None and current_heartbeat is not None:
+            self._wake_baseline_heartbeat = current_heartbeat
+
+        self._send_wake_key()
+        QTimer.singleShot(WAKE_KEY_RETRY_INTERVAL_MS, self._wake_cycle_step)
+
+    def _send_wake_key(self) -> bool:
+        if os.name != "nt":
+            return False
+        try:
+            self.main_window._log_message("Wake key injection started (Up arrow).")
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+            hwnd = self._embedded_window_hwnd
+            if not hwnd:
+                pid = self.process.processId()
+                if pid:
+                    hwnd = self._find_window_for_pid(pid, self._rom_title)
+                    if hwnd:
+                        self._embedded_window_hwnd = hwnd
+            if not hwnd:
+                self.main_window._log_message("Wake key failed: emulator window not found.")
+                return False
+            if not user32.IsWindow(hwnd):
+                self.main_window._log_message("Wake key failed: emulator window invalid.")
+                return False
+
+            try:
+                foreground = user32.GetForegroundWindow()
+                if foreground != hwnd:
+                    target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+                    current_thread = user32.GetCurrentThreadId()
+                    if target_thread != current_thread:
+                        user32.AttachThreadInput(current_thread, target_thread, True)
+                    user32.SetForegroundWindow(hwnd)
+                    user32.SetActiveWindow(hwnd)
+                    user32.SetFocus(hwnd)
+                    if target_thread != current_thread:
+                        user32.AttachThreadInput(current_thread, target_thread, False)
+            except Exception:
+                pass
+
+            INPUT_KEYBOARD = 1
+            KEYEVENTF_KEYUP = 0x0002
+            KEYEVENTF_SCANCODE = 0x0008
+            KEYEVENTF_EXTENDEDKEY = 0x0001
+            SCAN_UP = 0x48
+
+            class KEYBDINPUT(ctypes.Structure):
+                _fields_ = [
+                    ("wVk", wintypes.WORD),
+                    ("wScan", wintypes.WORD),
+                    ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ULONG_PTR),
+                ]
+
+            class MOUSEINPUT(ctypes.Structure):
+                _fields_ = [
+                    ("dx", wintypes.LONG),
+                    ("dy", wintypes.LONG),
+                    ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ULONG_PTR),
+                ]
+
+            class HARDWAREINPUT(ctypes.Structure):
+                _fields_ = [
+                    ("uMsg", wintypes.DWORD),
+                    ("wParamL", wintypes.WORD),
+                    ("wParamH", wintypes.WORD),
+                ]
+
+            class INPUT_UNION(ctypes.Union):
+                _fields_ = [
+                    ("ki", KEYBDINPUT),
+                    ("mi", MOUSEINPUT),
+                    ("hi", HARDWAREINPUT),
+                ]
+
+            class INPUT(ctypes.Structure):
+                _fields_ = [
+                    ("type", wintypes.DWORD),
+                    ("union", INPUT_UNION),
+                ]
+
+            user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+            user32.SendInput.restype = wintypes.UINT
+
+            down_input = INPUT()
+            down_input.type = INPUT_KEYBOARD
+            down_input.union.ki = KEYBDINPUT(
+                0, SCAN_UP, KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY, 0, 0
+            )
+            up_input = INPUT()
+            up_input.type = INPUT_KEYBOARD
+            up_input.union.ki = KEYBDINPUT(
+                0,
+                SCAN_UP,
+                KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP,
+                0,
+                0,
+            )
+
+            sent_down = user32.SendInput(1, ctypes.byref(down_input), ctypes.sizeof(INPUT))
+            if sent_down == 1:
+                self.main_window._log_message("Wake key down sent (Up arrow).")
+            else:
+                self.main_window._log_message(
+                    f"Wake key down failed (Up arrow). WinError={ctypes.get_last_error()}"
+                )
+            time.sleep(0.06)
+            sent_up = user32.SendInput(1, ctypes.byref(up_input), ctypes.sizeof(INPUT))
+            if sent_up == 1:
+                self.main_window._log_message("Wake key up sent (Up arrow).")
+            else:
+                self.main_window._log_message(
+                    f"Wake key up failed (Up arrow). WinError={ctypes.get_last_error()}"
+                )
+            return sent_down == 1 and sent_up == 1
+        except Exception as exc:
+            self.main_window._log_message(
+                f"Wake key injection failed with exception: {exc}"
+            )
+            return False
 
     def _on_screenshot_menu_opened(self) -> None:
         self._screenshot_menu_open = True
@@ -1268,6 +1479,13 @@ class GameDialog(QMainWindow):
             self.session.memory_map.set_command(command)
         except Exception:
             return
+
+    def _update_window_title(self) -> None:
+        base = f"Game Session {self.session.session_id}"
+        if self._rom_title:
+            self.setWindowTitle(f"{base} - {self._rom_title}")
+        else:
+            self.setWindowTitle(f"{base} - No Game Loaded")
 
 
     def _on_ref_palette_changed(self, value: str) -> None:
@@ -1872,14 +2090,21 @@ class MainWindow(QMainWindow):
             if session.is_unresponsive:
                 session.is_unresponsive = False
                 session.dialog._set_unresponsive_state(False)
+                self._log_message(
+                    f"Session {session.session_id} heartbeat resumed (sleep mode cleared)."
+                )
             return
         if session.last_heartbeat_time == 0.0:
             session.last_heartbeat_time = now
             return
-        if now - session.last_heartbeat_time > 6.0:
+        stale_seconds = now - session.last_heartbeat_time
+        if stale_seconds > HEARTBEAT_UNRESPONSIVE_SECONDS:
             if not session.is_unresponsive:
                 session.is_unresponsive = True
                 session.dialog._set_unresponsive_state(True)
+                self._log_message(
+                    f"Session {session.session_id} entered sleep mode (heartbeat stalled)."
+                )
 
     def _update_traffic_lights(self) -> None:
         if not self.traffic_lighting_checkbox.isChecked():
