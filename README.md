@@ -42,11 +42,30 @@ IntelliPal uses a fork/implementation of jzIntv available at: https://github.com
 
    ### Linux (Ubuntu/Debian)
 
+   #### Quick Setup (Automated)
+
+   The easiest way to get started is using the provided installation script:
+
+   ```bash
+   sudo ./tools/install_linux_deps.sh
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   python -m intellipal.main
+   ```
+
+   #### Manual Setup
+
    1. Install system dependencies for PySide6 and window embedding:
 
    ```bash
    sudo apt update
    sudo apt install python3-venv python3-pip xdotool libxcb-cursor0 libgl1
+   ```
+
+   If you're on a minimal system, you may also need:
+   ```bash
+   sudo apt install libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3
    ```
 
    2. Create and activate a Python virtual environment:
@@ -63,11 +82,56 @@ IntelliPal uses a fork/implementation of jzIntv available at: https://github.com
    python -m intellipal.main
    ```
 
-   Note: On Linux, the `xdotool` package is required for window embedding and keyboard injection features. Without it, the emulator will run in a separate window.
+   #### Building a Standalone Linux Executable
 
-   Alternatively, use the helper script to install all dependencies:
+   Create a self-contained executable for distribution or system installation:
+
    ```bash
-   sudo ./tools/install_linux_deps.sh
+   # Install PyInstaller (if not already installed)
+   pip install pyinstaller
+
+   # Build the executable
+   python build_exe.py
+
+   # Run from dist folder
+   ./dist/intellipal
+   ```
+
+   **Optional**: Install to system binary directory:
+   ```bash
+   sudo cp dist/intellipal /usr/local/bin/intellipal
+   intellipal  # Now runnable from anywhere
+   ```
+
+   #### Notes
+
+   - **Window Embedding**: The `xdotool` package is required for native window embedding on X11. Without it, the emulator will run in a separate window (still fully functional).
+   - **Wayland Detection**: On Wayland desktop sessions, IntelliPal automatically switches to compact UI mode (separate emulator window). This is expected behavior.
+   - **Session Type**: To check your current session:
+     ```bash
+     echo $XDG_SESSION_TYPE  # Shows 'wayland' or 'x11'
+     ```
+
+   #### Troubleshooting Linux
+
+   **Missing display or connection errors**:
+   ```bash
+   # Ensure X11/Wayland is properly configured
+   export QT_QPA_PLATFORM=wayland  # Force Wayland
+   export QT_QPA_PLATFORM=xcb     # Force X11
+   ```
+
+   **xdotool not working**:
+   ```bash
+   # Verify xdotool is installed and working
+   xdotool search --name ".*"
+   # If command not found, reinstall: sudo apt install xdotool
+   ```
+
+   **Library not found errors**:
+   ```bash
+   # Install additional runtime libraries
+   sudo apt install libfontconfig1 libfreetype6 libxext6 libxrender1
    ```
 
    ### Building a standalone executable
