@@ -17,12 +17,15 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenuBar,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -60,6 +63,63 @@ WAKE_KEY_RETRY_INTERVAL_MS = 200
 WAKE_KEY_MAX_SECONDS = 2.5
 
 
+def is_wayland_session() -> bool:
+    """Check if actually running on Wayland (not XWayland).
+    
+    This checks the actual Qt platform, respecting QT_QPA_PLATFORM overrides.
+    """
+    if os.name == "nt":
+        return False
+    # Check the actual Qt platform - this respects QT_QPA_PLATFORM override
+    try:
+        platform_name = QGuiApplication.platformName().lower()
+        if platform_name in ("xcb", "x11"):
+            return False  # Running under X11/XWayland
+        if platform_name == "wayland":
+            return True
+    except Exception:
+        pass
+    # Fallback to environment check
+    session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+    return session_type == "wayland" or bool(wayland_display)
+
+
+def _apply_dialog_frame(widget) -> None:
+    """No-op for main window - styling applied elsewhere if needed."""
+    pass
+
+
+def _apply_session_frame(widget) -> None:
+    """Apply visible frame styling to Game Session windows for better distinction."""
+    # Add a colored border and header area to make session windows stand out
+    widget.setStyleSheet("""
+        GameDialog {
+            background-color: #1565c0;
+        }
+        GameDialog > QWidget {
+            background-color: palette(window);
+            border: 3px solid #1565c0;
+            border-radius: 6px;
+        }
+        QToolBar {
+            background-color: #1565c0;
+            border: none;
+            padding: 2px;
+        }
+        QToolBar QToolButton {
+            color: white;
+            background-color: transparent;
+            border: 1px solid transparent;
+            border-radius: 3px;
+            padding: 4px 8px;
+        }
+        QToolBar QToolButton:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+    """)
+
+
 @dataclass
 class PaletteState:
     name: str
@@ -87,6 +147,8 @@ class GameSession:
 class SettingsDialog(QDialog):
     def __init__(self, settings: Dict, on_change):
         super().__init__()
+        # Apply frame styling for better visibility on Linux
+        _apply_dialog_frame(self)
         # Set dialog icon to project settings SVG if present
         try:
             base_dir = Path(__file__).resolve().parents[1]
@@ -172,7 +234,7 @@ class SettingsDialog(QDialog):
         self.jzintv_flags = QLineEdit(self._settings.get("jzintv_flags", ""))
         self.jzintv_flags.setPlaceholderText("(optional)")
 
-        self.exec_file_path = QLineEdit(self._settings.get("exec_file_path", ".\\exec.bin"))
+        self.exec_file_path = QLineEdit(self._settings.get("exec_file_path", "./exec.bin"))
         exec_browse_btn = QToolButton()
         exec_browse_btn.setText("...")
         exec_browse_btn.clicked.connect(self._browse_exec_file)
@@ -182,7 +244,7 @@ class SettingsDialog(QDialog):
         exec_widget = QWidget()
         exec_widget.setLayout(exec_row)
 
-        self.grom_file_path = QLineEdit(self._settings.get("grom_file_path", ".\\grom.bin"))
+        self.grom_file_path = QLineEdit(self._settings.get("grom_file_path", "./grom.bin"))
         grom_browse_btn = QToolButton()
         grom_browse_btn.setText("...")
         grom_browse_btn.clicked.connect(self._browse_grom_file)
@@ -245,7 +307,7 @@ class SettingsDialog(QDialog):
         emulator_layout.addRow("Exec file path", exec_widget)
         emulator_layout.addRow("GROM file path", grom_widget)
         jzintv_flags_label = QLabel("JZINTV Flags")
-        jzintv_flags_label.setToolTip("Optional extra flags passed to jzintv_pal.exe when launching a Game Session.")
+        jzintv_flags_label.setToolTip("Optional extra flags passed to the jzIntv emulator when launching a Game Session.")
         emulator_layout.addRow(jzintv_flags_label, self.jzintv_flags)
 
         session_layout.addRow("ROMs folder", roms_widget)
@@ -509,13 +571,86 @@ class ElideLabel(QLabel):
         super().setText(elided)
 
 
+class AboutDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("About IntelliPal")
+        self.setFixedSize(420, 340)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        title = QLabel(f"<h2>IntelliPal</h2>")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        build_label = QLabel(f"<b>Build:</b> {BUILD_ID}")
+        build_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(build_label)
+
+        desc = QLabel(
+            "A palette management and game session helper for the "
+            "jzIntv Intellivision emulator."
+        )
+        desc.setWordWrap(True)
+        desc.setAlignment(Qt.AlignCenter)
+        layout.addWidget(desc)
+
+        features = QLabel(
+            "<b>Features:</b><br>"
+            "• Real-time palette customization<br>"
+            "• Emulator launch and control<br>"
+            "• Screenshot capture with custom palettes<br>"
+            "• Shared memory communication with jzintv_pal"
+        )
+        features.setWordWrap(True)
+        layout.addWidget(features)
+
+        system_info = self._get_system_info()
+        sys_label = QLabel(f"<b>System:</b> {system_info}")
+        sys_label.setWordWrap(True)
+        layout.addWidget(sys_label)
+
+        layout.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+    def _get_system_info(self) -> str:
+        import platform
+        os_name = platform.system()
+        if os_name == "Linux":
+            try:
+                import distro
+                distro_name = distro.name(pretty=True)
+            except ImportError:
+                distro_name = "Linux"
+            session_type = os.environ.get("XDG_SESSION_TYPE", "unknown")
+            desktop = os.environ.get("XDG_CURRENT_DESKTOP", "unknown")
+            return f"{distro_name} ({session_type}, {desktop})"
+        elif os_name == "Darwin":
+            return f"macOS {platform.mac_ver()[0]}"
+        elif os_name == "Windows":
+            return f"Windows {platform.win32_ver()[0]}"
+        return platform.platform()
+
+
 class GameDialog(QMainWindow):
     def __init__(self, session: GameSession, main_window: "MainWindow", resolution: str = "640x480,8"):
         super().__init__(main_window)
+        # Apply colored header styling for better visibility
+        _apply_session_frame(self)
         self.session = session
         self.main_window = main_window
         self.resolution = resolution
         self._rom_title = None
+        self._compact_mode = self._is_wayland()
         self._update_window_title()
         try:
             icon_path = Path(__file__).resolve().parents[1] / "resources" / "game.svg"
@@ -543,6 +678,11 @@ class GameDialog(QMainWindow):
                     width, height = int(w), int(h)
         except (ValueError, IndexError):
             pass
+        
+        if self._compact_mode:
+            # Compact mode for Wayland - no video container, just controls
+            self._init_compact_ui()
+            return
         
         # Size dialog to fit the game resolution plus UI elements
         # Menu bar (~23px), status label (~20px), margins (12px), spacing (6px)
@@ -761,6 +901,233 @@ class GameDialog(QMainWindow):
         self._init_screenshot_controls()
         self._update_reference_controls(enabled=False)
 
+    def _is_wayland(self) -> bool:
+        """Check if running on Wayland."""
+        if os.name == "nt":
+            return False
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+        return session_type == "wayland" or bool(wayland_display)
+
+    def _init_compact_ui(self) -> None:
+        """Initialize compact UI for Wayland - no video container, just controls."""
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+        
+        # Process setup (same as normal mode)
+        self.process = QProcess(self)
+        self.process.started.connect(self._on_process_started)
+        self.process.finished.connect(self._on_process_finished)
+        self.process.errorOccurred.connect(self._on_process_error)
+        self.process.readyReadStandardOutput.connect(self._on_process_stdout)
+        self.process.readyReadStandardError.connect(self._on_process_stderr)
+
+        self._embed_timer = QTimer(self)
+        self._embed_timer.setInterval(250)
+        self._embed_timer.timeout.connect(self._try_embed_window)
+        self._embedded = False
+        self._embedded_window_hwnd: int | None = None
+        self._pending_rom_path: str | None = None
+        self._wake_pending = False
+        self._wake_deadline = 0.0
+        self._wake_baseline_heartbeat: int | None = None
+
+        # Dummy video container (not shown, but needed for compatibility)
+        self.video_container = QWidget()
+        self.scroll_area = None
+
+        # Session ID
+        self.session_id_value = f"{self.session.session_id:02d}"
+
+        # Create compact control buttons with icons
+        load_btn = QPushButton("Load Game")
+        load_btn.setToolTip("Load a ROM file")
+        load_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
+        load_btn.clicked.connect(self._load_game)
+
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+        self.pause_btn.clicked.connect(lambda: self._send_command("PAUSE"))
+
+        reset_btn = QPushButton("Reset")
+        reset_btn.setToolTip("Reset the game")
+        reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        reset_btn.clicked.connect(lambda: self._send_command("RESET"))
+
+        quit_btn = QPushButton("Quit")
+        quit_btn.setToolTip("Quit the current game")
+        quit_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
+        quit_btn.clicked.connect(self._quit_game)
+
+        screenshot_btn = QPushButton("Screenshot")
+        screenshot_btn.setIcon(self.style().standardIcon(QStyle.SP_DesktopIcon))
+        screenshot_btn.clicked.connect(self._take_screenshot)
+
+        close_btn = QPushButton("Close Session")
+        close_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogCloseButton))
+        close_btn.clicked.connect(self._close_session)
+
+        # Reference palette combo
+        self.ref_palette_combo = QComboBox()
+        self.ref_palette_combo.addItem("<none>")
+        for name, _ in self.main_window._get_palette_options():
+            self.ref_palette_combo.addItem(name)
+        self.ref_palette_combo.currentTextChanged.connect(self._on_ref_palette_changed)
+
+        # Split mode combo
+        self.ref_split_mode = QComboBox()
+        self.ref_split_mode.addItems(["No Split", "Vertical", "Horizontal"])
+        self.ref_split_mode.currentTextChanged.connect(self._on_split_mode_changed)
+
+        # Split slider
+        self.ref_split_slider = QSlider(Qt.Horizontal)
+        self.ref_split_slider.setMinimum(0)
+        self.ref_split_slider.setMaximum(159)
+        self.ref_split_slider.setValue(80)
+        self.ref_split_slider.setEnabled(False)
+        self.ref_split_slider.valueChanged.connect(self._on_split_value_changed)
+
+        # Flip button
+        self.ref_flip_btn = QPushButton("Flip")
+        self.ref_flip_btn.setToolTip("Flip Palettes")
+        self._ref_flip_negative = False
+        self.ref_flip_btn.clicked.connect(self._on_flip_clicked)
+
+        # Screenshot resolution combo (needed for compatibility)
+        self.screenshot_res_combo = QComboBox()
+        self.screenshot_res_combo.addItems(SCREENSHOT_RES_OPTIONS)
+        default_screenshot_res = self.main_window.settings.get("default_screenshot_res", "1x (320x200)")
+        if default_screenshot_res not in SCREENSHOT_RES_OPTIONS:
+            default_screenshot_res = SCREENSHOT_RES_OPTIONS[0]
+        self.screenshot_res_combo.setCurrentText(default_screenshot_res)
+        self.screenshot_res_combo.currentTextChanged.connect(self._on_screenshot_resolution_changed)
+
+        # Screenshot prefix (compatibility)
+        self.screenshot_prefix_label = QLabel("")
+        self.edit_screenshot_prefix_button = QPushButton("Prefix...")
+        self.edit_screenshot_prefix_button.clicked.connect(self._on_edit_screenshot_prefix)
+        self.take_screenshot_button = screenshot_btn
+        self.screenshot_menu_button = screenshot_btn  # Alias for compatibility
+        self.screenshot_menu = QMenu(self)  # Dummy menu for compatibility
+        self._screenshot_menu_open = False
+
+        # Pause action for sync (compatibility)
+        self.pause_action = QAction("Pause Game", self)
+        self.pause_action.triggered.connect(lambda: self._send_command("PAUSE"))
+
+        # Game title label - shows currently loaded game
+        self._compact_game_label = QLabel("No game loaded")
+        self._compact_game_label.setStyleSheet("color: #888; font-style: italic;")
+        self._compact_game_label.setWordWrap(True)
+
+        # Status label with better visual feedback
+        self.status_label = QLabel("Ready")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet(
+            "color: #1b5e20; background: #c8e6c9; border-radius: 4px; padding: 4px 8px; font-weight: bold;"
+        )
+        self._status_base_text = "Ready"
+        self._unresponsive_override = False
+
+        self.ref_status_label = ElideLabel("")
+        self.ref_status_label.setVisible(False)
+
+        # Session ID label
+        self.session_id_label = QLabel(self.session_id_value)
+        self.session_id_label.setAlignment(Qt.AlignCenter)
+        self.session_id_label.setToolTip("Session Id (click to edit)")
+        self.session_id_label.setStyleSheet(
+            "font-weight: bold; font-size: 16px; background: #e3f2fd; border-radius: 4px; padding: 2px 8px;"
+        )
+        self.session_id_label.mousePressEvent = self._on_session_id_clicked
+
+        # Layout
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        # Header with session ID
+        header = QHBoxLayout()
+        header.addWidget(QLabel("Session:"))
+        header.addWidget(self.session_id_label)
+        header.addStretch()
+        layout.addLayout(header)
+
+        # Game title display
+        layout.addWidget(self._compact_game_label)
+
+        # Status indicator
+        layout.addWidget(self.status_label)
+
+        # Game control buttons - 2x2 grid for cleaner look
+        game_grid = QHBoxLayout()
+        game_grid.setSpacing(6)
+        
+        left_col = QVBoxLayout()
+        left_col.setSpacing(4)
+        left_col.addWidget(load_btn)
+        left_col.addWidget(self.pause_btn)
+        
+        right_col = QVBoxLayout()
+        right_col.setSpacing(4)
+        right_col.addWidget(reset_btn)
+        right_col.addWidget(quit_btn)
+        
+        game_grid.addLayout(left_col)
+        game_grid.addLayout(right_col)
+        layout.addLayout(game_grid)
+
+        # Screenshot row
+        screenshot_row = QHBoxLayout()
+        screenshot_row.setSpacing(4)
+        screenshot_row.addWidget(screenshot_btn)
+        screenshot_row.addWidget(self.screenshot_res_combo)
+        layout.addLayout(screenshot_row)
+
+        # Reference palette section with separator
+        separator = QWidget()
+        separator.setFixedHeight(1)
+        separator.setStyleSheet("background-color: #ddd;")
+        layout.addWidget(separator)
+
+        ref_label = QLabel("Reference Palette")
+        ref_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(ref_label)
+
+        ref_row1 = QHBoxLayout()
+        ref_row1.setSpacing(4)
+        ref_row1.addWidget(self.ref_palette_combo, 1)
+        ref_row1.addWidget(self.ref_flip_btn)
+        layout.addLayout(ref_row1)
+
+        ref_row2 = QHBoxLayout()
+        ref_row2.setSpacing(4)
+        ref_row2.addWidget(self.ref_split_mode)
+        ref_row2.addWidget(self.ref_split_slider, 1)
+        layout.addLayout(ref_row2)
+
+        # Close button at bottom
+        layout.addStretch()
+        layout.addWidget(close_btn)
+
+        self.setCentralWidget(central)
+        
+        # Apply visible border styling to make window stand out
+        central.setStyleSheet("""
+            QWidget#sessionCentral {
+                background-color: palette(window);
+                border: 1px solid #1565c0;
+                border-radius: 4px;
+            }
+        """)
+        central.setObjectName("sessionCentral")
+
+        # Set compact size - slightly larger to fit improved UI
+        self.setFixedSize(310, 350)
+
+        self._init_screenshot_controls()
+        self._update_reference_controls(enabled=False)
+
     def _load_game(self) -> None:
         start_dir = self.main_window.settings.get("roms_folder", "")
         rom_path, _ = QFileDialog.getOpenFileName(
@@ -799,8 +1166,12 @@ class GameDialog(QMainWindow):
             return
         if self.session.emulator_paused:
             self.pause_action.setText("Resume")
+            if hasattr(self, "pause_btn"):
+                self.pause_btn.setText("Resume")
         else:
             self.pause_action.setText("Pause Game")
+            if hasattr(self, "pause_btn"):
+                self.pause_btn.setText("Pause")
 
     def _init_screenshot_controls(self) -> None:
         self._screenshot_prefix_updating = False
@@ -868,11 +1239,34 @@ class GameDialog(QMainWindow):
             self._set_screenshot_controls_enabled(False)
             self.main_window._log_message(f"Failed to set screenshot prefix: {exc}")
 
+    def _take_screenshot(self) -> None:
+        """Take a screenshot by writing scale/prefix then sending command."""
+        try:
+            self._write_screenshot_scale(self.screenshot_res_combo.currentText())
+            self._write_screenshot_prefix(self._screenshot_prefix_value)
+            self._send_command("SCREENSHOT")
+            self._show_screenshot_feedback()
+        except Exception as exc:
+            self.main_window._log_message(f"Screenshot failed: {exc}")
+
+    def _show_screenshot_feedback(self) -> None:
+        """Show brief feedback that screenshot was taken."""
+        old_style = self.status_label.styleSheet()
+        self.status_label.setStyleSheet("color: #2e7d32; font-weight: bold;")
+        self.status_label.setText("Screenshot taken")
+        QTimer.singleShot(2000, lambda: self._clear_screenshot_feedback(old_style))
+
+    def _clear_screenshot_feedback(self, old_style: str) -> None:
+        """Clear screenshot feedback message."""
+        if self.status_label.text() == "Screenshot taken":
+            self.status_label.setText("")
+            self.status_label.setStyleSheet(old_style)
+
     def _launch_emulator(self, rom_path: str) -> None:
         exe_path = self.main_window._get_emulator_path()
         if exe_path is None:
-            QMessageBox.warning(self, "Launch", "jzintv_pal executable not found.")
-            self.main_window._log_message("Launch failed: jzintv_pal executable not found.")
+            QMessageBox.warning(self, "Launch", "jzIntv emulator executable not found.")
+            self.main_window._log_message("Launch failed: jzIntv emulator executable not found.")
             return
         self._stop_emulator()
         exec_path = self._exec_path()
@@ -914,31 +1308,29 @@ class GameDialog(QMainWindow):
             except Exception as exc:
                 self.main_window._log_message(f"Screenshot path unavailable, using CWD: {exc}")
 
-        cmd_line = (
-            f"\"{exe_path}\" --shm-name=\"{self.session.map_name}\" "
-            f"--execimg=\"{exec_path}\" --gromimg=\"{grom_path}\" "
-            f"--displaysize=\"{display_size}\" "
-        )
-        if screenshot_dir_arg:
-            cmd_line += f"--screenshot-dir=\"{screenshot_dir_arg}\" "
-        if jzintv_flags_text:
-            cmd_line += f" {jzintv_flags_text} "
-        cmd_line += f"\"{rom_path}\""
-        self.main_window._log_message(f"Command line: {cmd_line}")
+        # Check if using jzintv_pal (supports --shm-name) or standard jzintv
+        exe_name = exe_path.name.lower()
+        use_shm = "jzintv_pal" in exe_name or os.name == "nt"
+
         self._set_status_base("Launching emulator...")
         self.process.setProgram(str(exe_path))
-        args = [
-            f"--shm-name={self.session.map_name}",
+        args = []
+        if use_shm:
+            args.append(f"--shm-name={self.session.map_name}")
+        args.extend([
             f"--execimg={exec_path}",
             f"--gromimg={grom_path}",
             f"--displaysize={display_size}",
-        ]
+        ])
         if screenshot_dir_arg:
             args.append(f"--screenshot-dir={screenshot_dir_arg}")
         if jzintv_flag_args:
             args.extend(jzintv_flag_args)
         args.append(rom_path)
         self.process.setArguments(args)
+        self.main_window._log_message(f"Command: {exe_path} {' '.join(args)}")
+        if not use_shm:
+            self.main_window._log_message("Note: Using standard jzintv - live palette features disabled.")
         self.process.start()
 
     def _dpi_scale(self) -> float:
@@ -997,8 +1389,19 @@ class GameDialog(QMainWindow):
             self._set_unresponsive_state(False)
         self._set_status_base("Emulator not running.")
 
+    def _is_wayland(self) -> bool:
+        """Check if running on Wayland (where window embedding is not possible)."""
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+        return session_type == "wayland" or bool(wayland_display)
+
     def _on_process_started(self) -> None:
+        if os.name != "nt" and self._is_wayland():
+            self._set_status_base("Emulator running (Wayland: separate window).")
+            self.main_window._log_message("[embed] Wayland detected - window embedding not supported, running as separate window")
+            return
         self._set_status_base("Emulator running. Embedding window...")
+        self.main_window._log_message("[embed] Process started, starting embed timer")
         self._embed_timer.start()
 
     def _on_process_finished(self) -> None:
@@ -1085,32 +1488,86 @@ class GameDialog(QMainWindow):
         self._update_status_focus()
 
     def _update_status_focus(self) -> None:
+        is_compact = self._compact_mode if hasattr(self, "_compact_mode") else False
         if getattr(self, "_unresponsive_override", False):
-            self.status_label.setText("Game In Sleep Mode-Press Up arrow to wake up")
-            self.status_label.setStyleSheet("color: #b00020;")
+            text = "Sleep Mode - Press Up to wake"
+            if is_compact:
+                self.status_label.setText(text)
+                self.status_label.setStyleSheet(
+                    "color: #b00020; background: #ffcdd2; border-radius: 4px; padding: 4px 8px; font-weight: bold;"
+                )
+            else:
+                self.status_label.setText("Game In Sleep Mode-Press Up arrow to wake up")
+                self.status_label.setStyleSheet("color: #b00020;")
             return
-        if self.isActiveWindow():
-            suffix = " Input Ready"
-            color = "#1b5e20"
+        if is_compact:
+            # Compact mode: simpler status without window focus dependency
+            base = self._status_base_text
+            if "running" in base.lower():
+                self.status_label.setText("Running")
+                self.status_label.setStyleSheet(
+                    "color: #1b5e20; background: #c8e6c9; border-radius: 4px; padding: 4px 8px; font-weight: bold;"
+                )
+            elif "not running" in base.lower():
+                self.status_label.setText("Stopped")
+                self.status_label.setStyleSheet(
+                    "color: #666; background: #e0e0e0; border-radius: 4px; padding: 4px 8px; font-weight: bold;"
+                )
+            else:
+                self.status_label.setText(base)
+                self.status_label.setStyleSheet(
+                    "color: #1565c0; background: #e3f2fd; border-radius: 4px; padding: 4px 8px; font-weight: bold;"
+                )
         else:
-            suffix = " Input Not Ready"
-            color = "#b00020"
-        self.status_label.setText(f"{self._status_base_text}{suffix}")
-        self.status_label.setStyleSheet(f"color: {color};")
+            if self.isActiveWindow():
+                suffix = " Input Ready"
+                color = "#1b5e20"
+            else:
+                suffix = " Input Not Ready"
+                color = "#b00020"
+            self.status_label.setText(f"{self._status_base_text}{suffix}")
+            self.status_label.setStyleSheet(f"color: {color};")
 
     def _focus_emulator_window(self) -> None:
         if getattr(self, "_screenshot_menu_open", False):
             return
-        if not self._embedded_window_hwnd or os.name != "nt":
+        if not self._embedded_window_hwnd:
+            return
+        if os.name == "nt":
+            try:
+                import ctypes
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                user32.SetForegroundWindow(self._embedded_window_hwnd)
+                user32.SetActiveWindow(self._embedded_window_hwnd)
+                user32.SetFocus(self._embedded_window_hwnd)
+            except Exception:
+                return
+        elif not self._is_wayland():
+            self._focus_emulator_window_x11()
+
+    def _focus_emulator_window_x11(self) -> None:
+        import subprocess
+        import shutil
+
+        if not shutil.which("xdotool"):
             return
         try:
-            import ctypes
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            user32.SetForegroundWindow(self._embedded_window_hwnd)
-            user32.SetActiveWindow(self._embedded_window_hwnd)
-            user32.SetFocus(self._embedded_window_hwnd)
+            # Use windowfocus for faster, more reliable focus on embedded windows
+            # Also use windowraise to ensure it's on top within the container
+            subprocess.run(
+                ["xdotool", "windowfocus", str(self._embedded_window_hwnd)],
+                capture_output=True,
+                timeout=0.5,
+            )
+            subprocess.run(
+                ["xdotool", "windowraise", str(self._embedded_window_hwnd)],
+                capture_output=True,
+                timeout=0.5,
+            )
+        except subprocess.TimeoutExpired:
+            pass
         except Exception:
-            return
+            pass
 
     def _maybe_wake_on_focus(self) -> None:
         if not self.session.is_unresponsive:
@@ -1187,7 +1644,7 @@ class GameDialog(QMainWindow):
 
     def _send_wake_key(self) -> bool:
         if os.name != "nt":
-            return False
+            return self._send_wake_key_x11()
         try:
             self.main_window._log_message("Wake key injection started (Up arrow).")
             import ctypes
@@ -1309,6 +1766,41 @@ class GameDialog(QMainWindow):
             )
             return False
 
+    def _send_wake_key_x11(self) -> bool:
+        import subprocess
+        import shutil
+
+        if not shutil.which("xdotool"):
+            self.main_window._log_message("Wake key failed: xdotool not installed.")
+            return False
+
+        hwnd = self._embedded_window_hwnd
+        if not hwnd:
+            pid = self.process.processId()
+            if pid:
+                hwnd = self._find_window_for_pid_x11(pid, self._rom_title)
+                if hwnd:
+                    self._embedded_window_hwnd = hwnd
+        if not hwnd:
+            self.main_window._log_message("Wake key failed: emulator window not found.")
+            return False
+
+        try:
+            self.main_window._log_message("Wake key injection started (Up arrow via xdotool).")
+            subprocess.run(
+                ["xdotool", "key", "--window", str(hwnd), "Up"],
+                check=True,
+                capture_output=True,
+            )
+            self.main_window._log_message("Wake key sent (Up arrow).")
+            return True
+        except subprocess.CalledProcessError as e:
+            self.main_window._log_message(f"Wake key failed: {e}")
+            return False
+        except Exception as exc:
+            self.main_window._log_message(f"Wake key injection failed: {exc}")
+            return False
+
     def _on_screenshot_menu_opened(self) -> None:
         self._screenshot_menu_open = True
         self._update_status_focus()
@@ -1354,8 +1846,7 @@ class GameDialog(QMainWindow):
         if self._embedded:
             return
         if os.name != "nt":
-            self._set_status_base("Embedding only supported on Windows for now.")
-            self._embed_timer.stop()
+            self._try_embed_window_x11()
             return
         pid = self.process.processId()
         if pid == 0:
@@ -1426,6 +1917,108 @@ class GameDialog(QMainWindow):
             self.main_window._log_message(f"Failed to embed window: {e}")
             self._embed_timer.stop()
 
+    def _try_embed_window_x11(self) -> None:
+        pid = self.process.processId()
+        self.main_window._log_message(f"[embed] Trying to embed, pid={pid}")
+        if pid == 0:
+            self.main_window._log_message("[embed] PID is 0, aborting")
+            return
+
+        window_id = self._find_window_for_pid_x11(pid, self._rom_title)
+        self.main_window._log_message(f"[embed] Window search returned: {window_id}")
+        if window_id is None:
+            return
+
+        width, height = 640, 480
+        try:
+            if "," in self.resolution:
+                dims = self.resolution.split(",")[0]
+                if "x" in dims:
+                    w, h = dims.split("x")
+                    width, height = int(w), int(h)
+        except (ValueError, IndexError):
+            pass
+
+        self.video_container.setFixedSize(width, height)
+
+        # Use xdotool directly - Qt X11 embedding is unreliable on many Linux setups
+        self._try_embed_window_xdotool(window_id, width, height)
+
+    def _try_embed_window_xdotool(self, window_id: int, width: int, height: int) -> None:
+        import subprocess
+        import shutil
+
+        if not shutil.which("xdotool"):
+            self.main_window._log_message("xdotool not found; embedding not available. Install with: sudo apt install xdotool")
+            self._embed_timer.stop()
+            self._set_status_base("Emulator running (external window).")
+            return
+
+        container_win_id = int(self.video_container.winId())
+        try:
+            subprocess.run(
+                ["xdotool", "windowreparent", str(window_id), str(container_win_id)],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["xdotool", "windowsize", str(window_id), str(width), str(height)],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["xdotool", "windowmove", "--relative", str(window_id), "0", "0"],
+                check=True,
+                capture_output=True,
+            )
+
+            self._embedded_window_hwnd = window_id
+            self._embedded = True
+            self._embed_timer.stop()
+            self._set_status_base("Emulator running.")
+            self.main_window._log_message(f"Embedded emulator window (xdotool) at {width}x{height}")
+        except subprocess.CalledProcessError as e:
+            self.main_window._log_message(f"xdotool embed failed: {e}")
+            self._embed_timer.stop()
+            self._set_status_base("Emulator running (external window).")
+
+    def _find_window_for_pid_x11(self, pid: int, title_hint: str | None) -> int | None:
+        import subprocess
+        import shutil
+
+        if shutil.which("xdotool"):
+            try:
+                result = subprocess.run(
+                    ["xdotool", "search", "--pid", str(pid)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    window_ids = result.stdout.strip().split("\n")
+                    if window_ids:
+                        window_id = int(window_ids[0])
+                        self.main_window._log_message(f"Found X11 window for pid {pid}: {window_id}")
+                        return window_id
+            except Exception as e:
+                self.main_window._log_message(f"xdotool search failed: {e}")
+
+        if title_hint and shutil.which("xdotool"):
+            try:
+                result = subprocess.run(
+                    ["xdotool", "search", "--name", title_hint],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    window_ids = result.stdout.strip().split("\n")
+                    if window_ids:
+                        window_id = int(window_ids[0])
+                        self.main_window._log_message(f"Found X11 window by title '{title_hint}': {window_id}")
+                        return window_id
+            except Exception:
+                pass
+
+        return None
 
     def _find_window_for_pid(self, pid: int, title_hint: str | None) -> int | None:
         try:
@@ -1486,6 +2079,14 @@ class GameDialog(QMainWindow):
             self.setWindowTitle(f"{base} - {self._rom_title}")
         else:
             self.setWindowTitle(f"{base} - No Game Loaded")
+        # Update compact mode game label if present
+        if hasattr(self, "_compact_game_label"):
+            if self._rom_title:
+                self._compact_game_label.setText(self._rom_title)
+                self._compact_game_label.setStyleSheet("color: #333; font-weight: bold;")
+            else:
+                self._compact_game_label.setText("No game loaded")
+                self._compact_game_label.setStyleSheet("color: #888; font-style: italic;")
 
 
     def _on_ref_palette_changed(self, value: str) -> None:
@@ -1598,8 +2199,18 @@ class GameDialog(QMainWindow):
 
 
 class MainWindow(QMainWindow):
+    def _is_wayland(self) -> bool:
+        """Check if running on Wayland."""
+        if os.name == "nt":
+            return False
+        session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+        wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+        return session_type == "wayland" or bool(wayland_display)
+
     def __init__(self):
         super().__init__()
+        # Apply frame styling for better visibility on Linux
+        _apply_dialog_frame(self)
         self.setWindowTitle(f"IntelliPal - Build {BUILD_ID}")
         try:
             icon_path = Path(__file__).resolve().parents[1] / "resources" / "icon_snafu.png"
@@ -1683,7 +2294,11 @@ class MainWindow(QMainWindow):
         self.open_folder_btn.setToolTip("Open palette folder")
         self.rename_btn.setToolTip("Rename selected palette")
         self.settings_btn.setToolTip("Open settings dialog")
-        self.new_session_btn.setToolTip("New game session")
+        # Provide extra context for Wayland users
+        if self._is_wayland():
+            self.new_session_btn.setToolTip("New game session (opens control panel + separate emulator window)")
+        else:
+            self.new_session_btn.setToolTip("New game session")
 
         self.resolution_combo = QComboBox()
         resolutions = self.settings.get("game_resolutions", [])
@@ -1711,8 +2326,13 @@ class MainWindow(QMainWindow):
         self.dock_left_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_ArrowLeft))
         icon = self._load_icon("dock-right")
         self.dock_right_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_ArrowRight))
-        self.dock_left_btn.setToolTip("Dock left")
-        self.dock_right_btn.setToolTip("Dock right")
+        # Wayland has limited window positioning - update tooltips accordingly
+        if self._is_wayland():
+            self.dock_left_btn.setToolTip("Resize for left dock (Wayland: move window manually)")
+            self.dock_right_btn.setToolTip("Resize for right dock (Wayland: move window manually)")
+        else:
+            self.dock_left_btn.setToolTip("Dock window to left side of screen")
+            self.dock_right_btn.setToolTip("Dock window to right side of screen")
         self.dock_left_btn.clicked.connect(self._dock_left)
         self.dock_right_btn.clicked.connect(self._dock_right)
 
@@ -1744,6 +2364,7 @@ class MainWindow(QMainWindow):
         self.reset_btn = QToolButton()
         self.open_file_btn = QToolButton()
         self.rename_file_btn = QToolButton()
+        self.export_btn = QToolButton()
         self.refresh_btn = QToolButton()
 
         icon = self._load_icon("save")
@@ -1757,8 +2378,10 @@ class MainWindow(QMainWindow):
         self.open_file_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_DirOpenIcon))
         icon = self._load_icon("rename")
         self.rename_file_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        icon = self._load_icon("export")
+        self.export_btn.setIcon(icon or self.style().standardIcon(QStyle.SP_FileDialogStart))
 
-        for btn in (self.save_btn, self.save_as_btn, self.reset_btn, self.open_file_btn, self.rename_file_btn, self.refresh_btn):
+        for btn in (self.save_btn, self.save_as_btn, self.reset_btn, self.open_file_btn, self.rename_file_btn, self.export_btn, self.refresh_btn):
             btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
 
         self.save_btn.setToolTip("Save changes")
@@ -1766,6 +2389,7 @@ class MainWindow(QMainWindow):
         self.reset_btn.setToolTip("Reset to on-disk values")
         self.open_file_btn.setToolTip("Open palette file in default editor")
         self.rename_file_btn.setToolTip("Rename selected palette")
+        self.export_btn.setToolTip("Export palette as image")
         self.refresh_btn.setToolTip("Refresh palette list")
 
         self.save_btn.clicked.connect(self._save_palette)
@@ -1773,6 +2397,7 @@ class MainWindow(QMainWindow):
         self.reset_btn.clicked.connect(self._reset_palette)
         self.open_file_btn.clicked.connect(self._open_palette_file)
         self.rename_file_btn.clicked.connect(self._rename_palette)
+        self.export_btn.clicked.connect(self._export_palette_image)
         self.refresh_btn.clicked.connect(self._refresh_palette_list)
 
         file_controls = QHBoxLayout()
@@ -1783,6 +2408,7 @@ class MainWindow(QMainWindow):
         file_controls.addWidget(self.reset_btn)
         file_controls.addWidget(self.open_file_btn)
         file_controls.addWidget(self.rename_file_btn)
+        file_controls.addWidget(self.export_btn)
         file_controls.addStretch()
 
         header_layout = QVBoxLayout()
@@ -1838,6 +2464,7 @@ class MainWindow(QMainWindow):
         self.controls_layout.setContentsMargins(0, 0, 0, 0)
 
         self.color_controls: List[ColorControl] = []
+        self._use_grid_layout = True  # Use grid layout for better organization
         self._build_color_controls(self.settings.get("color_labels", DEFAULT_LABELS))
 
         scroll = QScrollArea()
@@ -1863,6 +2490,16 @@ class MainWindow(QMainWindow):
         self.traffic_lighting_checkbox.setToolTip("Toggle color traffic lighting indicators")
         self.traffic_lighting_checkbox.stateChanged.connect(self._on_toggle_traffic_lighting)
         top_bar.addWidget(self.traffic_lighting_checkbox)
+
+        # Layout toggle button (grid vs list)
+        self.layout_toggle_btn = QToolButton()
+        self.layout_toggle_btn.setText("Grid")
+        self.layout_toggle_btn.setCheckable(True)
+        self.layout_toggle_btn.setChecked(True)
+        self.layout_toggle_btn.setToolTip("Toggle between grid and list layout for colors")
+        self.layout_toggle_btn.toggled.connect(self._on_toggle_layout)
+        top_bar.addWidget(self.layout_toggle_btn)
+
         top_bar.addStretch()
         top_bar.addWidget(self.dock_left_btn)
         top_bar.addWidget(self.dock_right_btn)
@@ -1883,6 +2520,8 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(splitter)
         self.setCentralWidget(root)
 
+        self._create_menu_bar()
+
         self._load_palette_list()
         QTimer.singleShot(0, self._resize_to_fit_colors)
         QTimer.singleShot(0, self._apply_start_dock_state)
@@ -1890,6 +2529,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._update_game_session_availability)
         QTimer.singleShot(0, self._log_settings_location)
         QTimer.singleShot(0, self._on_toggle_traffic_lighting)
+        QTimer.singleShot(500, self._startup_sanity_check)
 
     def _early_log(self, message: str) -> None:
         """Collect log messages before logging is fully configured."""
@@ -1905,6 +2545,41 @@ class MainWindow(QMainWindow):
         settings_path = get_config_path()
         self._log_message(f"Settings file: {settings_path}")
 
+    def _startup_sanity_check(self) -> None:
+        """Run sanity check on startup and warn if critical files are missing."""
+        results = self._check_setup()
+
+        # Log all results
+        for name, item in results.items():
+            status = item["status"]
+            path = item.get("path", "N/A")
+            if status == "ok":
+                self._log_message(f"[setup] {name}: OK ({path})")
+            else:
+                error = item.get("error", "Unknown issue")
+                self._log_message(f"[setup] {name}: {status} - {error} ({path})")
+
+        # Check for critical issues (emulator and BIOS files)
+        critical_issues = []
+        if results["exec_bin"]["status"] != "ok":
+            critical_issues.append("exec.bin (EXEC ROM)")
+        if results["grom_bin"]["status"] != "ok":
+            critical_issues.append("grom.bin (GROM ROM)")
+        if results["emulator"]["status"] not in ("ok", "not_executable"):
+            critical_issues.append("jzintv_pal (emulator)")
+
+        if critical_issues:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Setup Warning")
+            msg.setIcon(QMessageBox.Warning)
+            msg.setText("Some required files are missing or invalid:")
+            msg.setInformativeText(
+                "• " + "\n• ".join(critical_issues) +
+                "\n\nGame sessions will not work until these are configured.\n"
+                "Use Help → Check Setup for details."
+            )
+            msg.exec()
+
     def _dock_left(self) -> None:
         self._dock_to_side(left=True)
 
@@ -1914,8 +2589,22 @@ class MainWindow(QMainWindow):
     def _dock_to_side(self, left: bool) -> None:
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
+            self.status_label.setText("Could not detect screen")
             return
+
         available = screen.availableGeometry()
+        
+        # On Wayland, window positioning is restricted - try resize only
+        if self._is_wayland():
+            # Wayland: We can only reliably resize, not position
+            # Set window to a narrow width that works as a sidebar
+            width = min(self._dock_width, available.width() // 2)
+            height = available.height()
+            self.resize(width, height)
+            self.status_label.setText(f"Resized for {'left' if left else 'right'} dock (move window manually on Wayland)")
+            return
+
+        # X11/Windows: Full positioning support
         frame = self.frameGeometry()
         geo = self.geometry()
         margin_left = geo.left() - frame.left()
@@ -1927,6 +2616,7 @@ class MainWindow(QMainWindow):
         height = max(0, adjusted.height())
         x = adjusted.x() if left else adjusted.x() + adjusted.width() - width
         self.setGeometry(x, adjusted.y(), width, height)
+        self.status_label.setText(f"Docked {'left' if left else 'right'}")
 
     def _create_game_session(self) -> None:
         if not self._game_sessions_enabled():
@@ -1986,7 +2676,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Game Session", "Failed to open game dialog.")
             self._remove_game_session(session)
             return
-        self.status_label.setText(f"Created game session {session_id}")
+        if self._is_wayland():
+            self.status_label.setText(f"Session {session_id} created - emulator in separate window")
+        else:
+            self.status_label.setText(f"Created game session {session_id}")
 
     def _current_palette_colors(self) -> List[ColorTuple] | None:
         state = self._current_state()
@@ -2144,6 +2837,28 @@ class MainWindow(QMainWindow):
     def _on_toggle_traffic_lighting(self) -> None:
         self._update_traffic_lights()
 
+    def _on_toggle_layout(self, checked: bool) -> None:
+        """Toggle between grid and list layout for color controls."""
+        self._use_grid_layout = checked
+        self.layout_toggle_btn.setText("Grid" if checked else "List")
+        # Rebuild controls with new layout
+        labels = self.settings.get("color_labels", DEFAULT_LABELS)
+        # Save current colors before rebuild
+        current_colors = [ctrl.color() for ctrl in self.color_controls] if self.color_controls else None
+        self._build_color_controls(labels)
+        # Restore colors after rebuild
+        if current_colors:
+            for idx, color in enumerate(current_colors):
+                if idx < len(self.color_controls):
+                    self.color_controls[idx].set_color(color, emit=False)
+        # Re-apply current palette state
+        state = self._current_state()
+        if state and not state.invalid and len(state.colors) == 16:
+            for idx, color in enumerate(state.colors):
+                if idx < len(self.color_controls):
+                    self.color_controls[idx].set_color(color, emit=False)
+                    self.color_controls[idx].set_pending(state.dirty_colors[idx])
+
     def _apply_start_dock_state(self) -> None:
         state = self.settings.get("start_dock_state", "Left")
         if state == "Left":
@@ -2170,26 +2885,40 @@ class MainWindow(QMainWindow):
 
     def _get_emulator_path(self) -> Path | None:
         # Search order:
-        # 1. Current working directory (allows jzintv_pal.exe beside intellipal.exe/runtime)
-        # 2. Frozen executable's directory (when bundled with PyInstaller / single-exe)
-        # 3. The packaged resources folder (existing behavior)
+        # 1. Current working directory
+        # 2. Frozen executable's directory (when bundled with PyInstaller)
+        # 3. The packaged resources folder
+        # 4. System PATH lookup
+        if os.name == "nt":
+            exe_name = "jzintv_pal.exe"
+        else:
+            exe_name = "jzintv_pal"
+
         candidates = [
-            Path.cwd() / "jzintv_pal.exe",
+            Path.cwd() / exe_name,
         ]
         try:
-            candidates.append(Path(sys.executable).parent / "jzintv_pal.exe")
+            candidates.append(Path(sys.executable).parent / exe_name)
         except Exception:
             pass
-        candidates.append(self.base_dir / "resources" / "jzintv_pal.exe")
+        candidates.append(self.base_dir / "resources" / exe_name)
 
         for p in candidates:
             if p.exists():
                 return p
+
+        # Try PATH lookup on Linux
+        if os.name != "nt":
+            import shutil
+            path_exe = shutil.which("jzintv_pal")
+            if path_exe:
+                return Path(path_exe)
+
         return None
 
     def _game_sessions_enabled(self) -> bool:
-        exec_value = self.settings.get("exec_file_path", ".\\exec.bin")
-        grom_value = self.settings.get("grom_file_path", ".\\grom.bin")
+        exec_value = self.settings.get("exec_file_path", "./exec.bin")
+        grom_value = self.settings.get("grom_file_path", "./grom.bin")
         if not exec_value or not grom_value:
             return False
         exec_path = Path(exec_value)
@@ -2233,21 +2962,97 @@ class MainWindow(QMainWindow):
             control.setParent(None)
         self.color_controls = []
 
-        for index, label in enumerate(labels):
-            control = ColorControl(label, index, (0, 0, 0))
-            control.colorChanged.connect(self._on_color_changed)
-            control.resetRequested.connect(self._on_color_reset)
-            control.saveRequested.connect(self._on_color_save)
-            control.isolateRequested.connect(self._on_color_isolate)
-            if hasattr(self, "_load_icon"):
-                icon = self._load_icon("menu")
-                if icon is not None:
-                    control.set_actions_icon(icon, size=14)
-            self.controls_layout.addWidget(control)
-            self.color_controls.append(control)
+        # Clear existing layout items
+        while self.controls_layout.count():
+            item = self.controls_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+            elif item.layout():
+                self._clear_layout(item.layout())
+
+        use_grid = getattr(self, "_use_grid_layout", False)
+
+        if use_grid and len(labels) == 16:
+            # Create organized grid layout with color groups
+            # Group 1: Primary colors (0-3): Black, Blue, Red, Tan
+            # Group 2: Greens/Yellow/White (4-7): Dark Green, Light Green, Yellow, White  
+            # Group 3: Grays/Cyan/Warm (8-11): Gray, Cyan, Orange, Brown
+            # Group 4: Cool colors (12-15): Magenta, Light Blue, Yellow-Green, Purple
+
+            groups = [
+                ("Primary", [0, 1, 2, 3]),
+                ("Nature", [4, 5, 6, 7]),
+                ("Warm/Neutral", [8, 9, 10, 11]),
+                ("Cool", [12, 13, 14, 15]),
+            ]
+
+            for group_name, indices in groups:
+                # Group header
+                group_frame = QFrame()
+                group_frame.setFrameShape(QFrame.StyledPanel)
+                group_frame.setStyleSheet(
+                    "QFrame { background: #f5f5f5; border: 1px solid #ddd; border-radius: 6px; margin: 4px; }"
+                )
+                group_layout = QVBoxLayout(group_frame)
+                group_layout.setContentsMargins(10, 8, 10, 10)
+                group_layout.setSpacing(6)
+
+                # Group label
+                group_label = QLabel(group_name)
+                group_label.setStyleSheet(
+                    "font-weight: bold; color: #555; font-size: 11px; background: transparent; border: none;"
+                )
+                group_layout.addWidget(group_label)
+
+                # 2x2 grid for this group's colors
+                grid = QGridLayout()
+                grid.setSpacing(6)
+                grid.setContentsMargins(0, 2, 0, 0)
+
+                for grid_idx, color_idx in enumerate(indices):
+                    if color_idx < len(labels):
+                        control = ColorControl(labels[color_idx], color_idx, (0, 0, 0))
+                        control.colorChanged.connect(self._on_color_changed)
+                        control.resetRequested.connect(self._on_color_reset)
+                        control.saveRequested.connect(self._on_color_save)
+                        control.isolateRequested.connect(self._on_color_isolate)
+                        if hasattr(self, "_load_icon"):
+                            icon = self._load_icon("menu")
+                            if icon is not None:
+                                control.set_actions_icon(icon, size=14)
+                        row = grid_idx // 2
+                        col = grid_idx % 2
+                        grid.addWidget(control, row, col)
+                        self.color_controls.append(control)
+
+                group_layout.addLayout(grid)
+                self.controls_layout.addWidget(group_frame)
+        else:
+            # Fallback to simple vertical list
+            for index, label in enumerate(labels):
+                control = ColorControl(label, index, (0, 0, 0))
+                control.colorChanged.connect(self._on_color_changed)
+                control.resetRequested.connect(self._on_color_reset)
+                control.saveRequested.connect(self._on_color_save)
+                control.isolateRequested.connect(self._on_color_isolate)
+                if hasattr(self, "_load_icon"):
+                    icon = self._load_icon("menu")
+                    if icon is not None:
+                        control.set_actions_icon(icon, size=14)
+                self.controls_layout.addWidget(control)
+                self.color_controls.append(control)
 
         self.controls_layout.addStretch()
         self._sync_isolation_controls()
+
+    def _clear_layout(self, layout) -> None:
+        """Recursively clear a layout."""
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+            elif item.layout():
+                self._clear_layout(item.layout())
 
     def _palette_dir(self) -> Path:
         # Resolve palette directory exactly as specified in settings.
@@ -2494,6 +3299,68 @@ class MainWindow(QMainWindow):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(state.path)))
 
+    def _export_palette_image(self):
+        """Export the current palette as a visual image."""
+        state = self._current_state()
+        if not state or not state.path:
+            QMessageBox.warning(self, "Export", "No palette selected.")
+            return
+        
+        try:
+            # Import the palette visualizer
+            import sys
+            tools_dir = Path(__file__).parent.parent / 'tools'
+            if tools_dir not in sys.path:
+                sys.path.insert(0, str(tools_dir))
+            
+            from palette_visualizer import create_palette_image, create_comparison_grid
+            
+            # Get standard palette
+            palettes_dir = state.path.parent
+            standard_path = palettes_dir / 'Standard_Intellivision.txt'
+            if not standard_path.exists():
+                QMessageBox.warning(self, "Export", "Standard_Intellivision.txt not found in palettes folder.")
+                return
+            
+            # Ask user which format
+            options = ["Full Comparison", "Side-by-Side Comparison"]
+            format_choice, ok = QInputDialog.getItem(
+                self,
+                "Export Format",
+                "Select export format:",
+                options,
+                0,
+                False
+            )
+            if not ok:
+                return
+            
+            # Create output path
+            palette_name = state.path.stem
+            if format_choice == "Full Comparison":
+                output_path = state.path.parent / f"{palette_name}_comparison.png"
+                create_palette_image(str(state.path), str(standard_path), str(output_path))
+            else:
+                output_path = state.path.parent / f"{palette_name}_side_by_side.png"
+                create_comparison_grid(str(state.path), str(standard_path), str(output_path))
+            
+            # Show success and offer to open
+            result = QMessageBox.information(
+                self,
+                "Export Successful",
+                f"Palette exported to:\n{output_path.name}\n\nOpen the folder?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if result == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_path.parent)))
+        
+        except ImportError as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to import visualizer:\n{e}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export palette:\n{e}")
+
     def _rename_palette(self):
         state = self._current_state()
         if not state or state.name == "Default" or not state.path:
@@ -2739,6 +3606,276 @@ class MainWindow(QMainWindow):
 
         dialog = SettingsDialog(self.settings, on_change)
         dialog.exec()
+
+    def _create_menu_bar(self) -> None:
+        menubar = self.menuBar()
+
+        # File menu
+        file_menu = menubar.addMenu("&File")
+
+        new_session_action = QAction("&New Game Session", self)
+        new_session_action.setShortcut("Ctrl+N")
+        new_session_action.triggered.connect(self._create_game_session)
+        file_menu.addAction(new_session_action)
+
+        file_menu.addSeparator()
+
+        open_palette_folder_action = QAction("Open &Palette Folder", self)
+        open_palette_folder_action.setShortcut("Ctrl+O")
+        open_palette_folder_action.triggered.connect(self._open_palette_folder)
+        file_menu.addAction(open_palette_folder_action)
+
+        file_menu.addSeparator()
+
+        settings_action = QAction("&Settings...", self)
+        settings_action.setShortcut("Ctrl+,")
+        settings_action.triggered.connect(self._open_settings)
+        file_menu.addAction(settings_action)
+
+        file_menu.addSeparator()
+
+        quit_action = QAction("&Quit", self)
+        quit_action.setShortcut("Ctrl+Q")
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
+
+        # Edit menu
+        edit_menu = menubar.addMenu("&Edit")
+
+        save_action = QAction("&Save Palette", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self._save_palette)
+        edit_menu.addAction(save_action)
+
+        save_as_action = QAction("Save Palette &As...", self)
+        save_as_action.setShortcut("Ctrl+Shift+S")
+        save_as_action.triggered.connect(self._save_as_palette)
+        edit_menu.addAction(save_as_action)
+
+        edit_menu.addSeparator()
+
+        reset_action = QAction("&Reset Palette", self)
+        reset_action.triggered.connect(self._reset_palette)
+        edit_menu.addAction(reset_action)
+
+        refresh_action = QAction("Re&fresh Palette List", self)
+        refresh_action.setShortcut("F5")
+        refresh_action.triggered.connect(self._refresh_palette_list)
+        edit_menu.addAction(refresh_action)
+
+        # View menu
+        view_menu = menubar.addMenu("&View")
+
+        toggle_panel_action = QAction("Toggle &Palette Panel", self)
+        toggle_panel_action.setShortcut("Ctrl+P")
+        toggle_panel_action.triggered.connect(lambda: self.left_panel_toggle.toggle())
+        view_menu.addAction(toggle_panel_action)
+
+        view_menu.addSeparator()
+
+        dock_left_action = QAction("Dock &Left", self)
+        dock_left_action.triggered.connect(self._dock_left)
+        view_menu.addAction(dock_left_action)
+
+        dock_right_action = QAction("Dock &Right", self)
+        dock_right_action.triggered.connect(self._dock_right)
+        view_menu.addAction(dock_right_action)
+
+        # Help menu
+        help_menu = menubar.addMenu("&Help")
+
+        about_action = QAction("&About IntelliPal", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
+        help_menu.addSeparator()
+
+        check_setup_action = QAction("&Check Setup...", self)
+        check_setup_action.triggered.connect(self._show_setup_check)
+        help_menu.addAction(check_setup_action)
+
+        if os.name != "nt":
+            linux_info_action = QAction("&Linux Setup Info", self)
+            linux_info_action.triggered.connect(self._show_linux_info)
+            help_menu.addAction(linux_info_action)
+
+    def _show_about(self) -> None:
+        dialog = AboutDialog(self)
+        dialog.exec()
+
+    def _check_setup(self) -> dict:
+        """Check that all required files are in place and accessible."""
+        results = {
+            "exec_bin": {"status": "missing", "path": None, "size": None, "error": None},
+            "grom_bin": {"status": "missing", "path": None, "size": None, "error": None},
+            "emulator": {"status": "missing", "path": None, "error": None},
+            "palettes_dir": {"status": "missing", "path": None, "error": None},
+        }
+
+        # Check exec.bin
+        exec_value = self.settings.get("exec_file_path", "./exec.bin")
+        if exec_value:
+            exec_path = Path(exec_value)
+            if not exec_path.is_absolute():
+                exec_path = (Path.cwd() / exec_path).resolve()
+            results["exec_bin"]["path"] = str(exec_path)
+            if exec_path.exists():
+                try:
+                    size = exec_path.stat().st_size
+                    results["exec_bin"]["size"] = size
+                    if size == 8192:
+                        results["exec_bin"]["status"] = "ok"
+                    else:
+                        results["exec_bin"]["status"] = "wrong_size"
+                        results["exec_bin"]["error"] = f"Expected 8192 bytes, got {size}"
+                except Exception as e:
+                    results["exec_bin"]["status"] = "error"
+                    results["exec_bin"]["error"] = str(e)
+            else:
+                results["exec_bin"]["error"] = "File not found"
+
+        # Check grom.bin
+        grom_value = self.settings.get("grom_file_path", "./grom.bin")
+        if grom_value:
+            grom_path = Path(grom_value)
+            if not grom_path.is_absolute():
+                grom_path = (Path.cwd() / grom_path).resolve()
+            results["grom_bin"]["path"] = str(grom_path)
+            if grom_path.exists():
+                try:
+                    size = grom_path.stat().st_size
+                    results["grom_bin"]["size"] = size
+                    if size == 2048:
+                        results["grom_bin"]["status"] = "ok"
+                    else:
+                        results["grom_bin"]["status"] = "wrong_size"
+                        results["grom_bin"]["error"] = f"Expected 2048 bytes, got {size}"
+                except Exception as e:
+                    results["grom_bin"]["status"] = "error"
+                    results["grom_bin"]["error"] = str(e)
+            else:
+                results["grom_bin"]["error"] = "File not found"
+
+        # Check emulator
+        emu_path = self._get_emulator_path()
+        if emu_path:
+            results["emulator"]["path"] = str(emu_path)
+            try:
+                if os.access(emu_path, os.X_OK):
+                    results["emulator"]["status"] = "ok"
+                else:
+                    results["emulator"]["status"] = "not_executable"
+                    results["emulator"]["error"] = "File exists but is not executable"
+            except Exception as e:
+                results["emulator"]["status"] = "error"
+                results["emulator"]["error"] = str(e)
+        else:
+            results["emulator"]["error"] = "jzintv_pal not found in CWD, resources, or PATH"
+
+        # Check palettes directory
+        palette_dir = self._palette_dir()
+        results["palettes_dir"]["path"] = str(palette_dir)
+        if palette_dir.exists():
+            if palette_dir.is_dir():
+                results["palettes_dir"]["status"] = "ok"
+            else:
+                results["palettes_dir"]["status"] = "error"
+                results["palettes_dir"]["error"] = "Path exists but is not a directory"
+        else:
+            results["palettes_dir"]["status"] = "missing"
+            results["palettes_dir"]["error"] = "Directory does not exist (will be created on first use)"
+
+        return results
+
+    def _show_setup_check(self) -> None:
+        results = self._check_setup()
+
+        def status_icon(status: str) -> str:
+            if status == "ok":
+                return "✓"
+            elif status == "missing":
+                return "✗"
+            elif status in ("wrong_size", "not_executable", "error"):
+                return "⚠"
+            return "?"
+
+        def format_item(name: str, item: dict) -> str:
+            icon = status_icon(item["status"])
+            path = item.get("path") or "Not configured"
+            line = f"<b>{icon} {name}:</b> {item['status'].replace('_', ' ').title()}<br>"
+            line += f"&nbsp;&nbsp;&nbsp;&nbsp;Path: <code>{path}</code><br>"
+            if item.get("size") is not None:
+                line += f"&nbsp;&nbsp;&nbsp;&nbsp;Size: {item['size']} bytes<br>"
+            if item.get("error"):
+                line += f"&nbsp;&nbsp;&nbsp;&nbsp;<i style='color:#b00020'>{item['error']}</i><br>"
+            return line
+
+        all_ok = all(r["status"] == "ok" for r in results.values())
+
+        html = "<h3>Setup Check Results</h3>"
+        if all_ok:
+            html += "<p style='color:green'><b>All checks passed!</b></p>"
+        else:
+            html += "<p style='color:#b00020'><b>Some issues found:</b></p>"
+
+        html += "<hr>"
+        html += format_item("EXEC ROM (exec.bin)", results["exec_bin"])
+        html += "<br>"
+        html += format_item("GROM ROM (grom.bin)", results["grom_bin"])
+        html += "<br>"
+        html += format_item("Emulator (jzintv_pal)", results["emulator"])
+        html += "<br>"
+        html += format_item("Palettes Directory", results["palettes_dir"])
+
+        if not all_ok:
+            html += "<hr><p><b>Tips:</b></p><ul>"
+            if results["exec_bin"]["status"] != "ok":
+                html += "<li>exec.bin should be exactly 8192 bytes (8 KB)</li>"
+            if results["grom_bin"]["status"] != "ok":
+                html += "<li>grom.bin should be exactly 2048 bytes (2 KB)</li>"
+            if results["emulator"]["status"] == "missing":
+                html += "<li>Place jzintv_pal in the current directory or resources/ folder</li>"
+            if results["emulator"]["status"] == "not_executable":
+                html += "<li>Run: chmod +x /path/to/jzintv_pal</li>"
+            html += "</ul>"
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Setup Check")
+        msg.setTextFormat(Qt.RichText)
+        msg.setText(html)
+        msg.setMinimumWidth(500)
+        msg.exec()
+
+    def _show_linux_info(self) -> None:
+        session_type = os.environ.get("XDG_SESSION_TYPE", "unknown")
+        desktop = os.environ.get("XDG_CURRENT_DESKTOP", "unknown")
+        wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+
+        is_wayland = session_type == "wayland" or bool(wayland_display)
+
+        info = f"""<h3>Linux Environment</h3>
+<b>Session Type:</b> {session_type}<br>
+<b>Desktop:</b> {desktop}<br>
+<b>Display Server:</b> {"Wayland" if is_wayland else "X11"}<br>
+<br>
+<b>Window Embedding:</b> {"Not available (Wayland)" if is_wayland else "Available via xdotool"}<br>
+"""
+        if is_wayland:
+            info += """<br>
+<i>On Wayland, the emulator runs as a separate window. 
+All control features (pause, reset, palette changes, screenshots) 
+still work through shared memory.</i>
+"""
+        else:
+            import shutil
+            has_xdotool = shutil.which("xdotool") is not None
+            info += f"<br><b>xdotool:</b> {'Installed' if has_xdotool else 'Not found (install with: sudo apt install xdotool)'}<br>"
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Linux Setup Info")
+        msg.setTextFormat(Qt.RichText)
+        msg.setText(info)
+        msg.exec()
 
     def closeEvent(self, event):
         for session in list(self.game_sessions):

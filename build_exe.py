@@ -14,7 +14,10 @@ RESOURCES_DIR = REPO_ROOT / "resources"
 PALETTES_DIR = REPO_ROOT / "Palettes"
 ENTRYPOINT = REPO_ROOT / "intellipal" / "main.py"
 EXE_NAME = "intellipal"
-EXCLUDED_RESOURCE = "jzintv_pal.exe"
+
+IS_WINDOWS = os.name == "nt"
+EMULATOR_EXE = "jzintv_pal.exe" if IS_WINDOWS else "jzintv_pal"
+EXCLUDED_RESOURCES = [EMULATOR_EXE]
 
 
 def write_build_id(build_id: str) -> None:
@@ -32,7 +35,7 @@ def copy_resources_without_exe(src: Path, dst: Path) -> None:
     shutil.copytree(
         src,
         dst,
-        ignore=shutil.ignore_patterns(EXCLUDED_RESOURCE),
+        ignore=shutil.ignore_patterns(*EXCLUDED_RESOURCES),
     )
 
 
@@ -50,21 +53,32 @@ def run_pyinstaller(resources_dir: Path) -> None:
         str(ENTRYPOINT),
         "--add-data",
         f"{resources_dir}{data_sep}resources",
-        "--add-data",
-        f"{PALETTES_DIR}{data_sep}Palettes",
-        "--icon",
-        str(REPO_ROOT / "resources" / "icon_snafu.ico"),
     ]
+    if PALETTES_DIR.exists():
+        args.extend(["--add-data", f"{PALETTES_DIR}{data_sep}Palettes"])
+    else:
+        print(f"Note: Palettes folder not found at {PALETTES_DIR}, skipping.")
+
+    icon_path = REPO_ROOT / "resources" / "icon_snafu.ico"
+    if IS_WINDOWS and icon_path.exists():
+        args.extend(["--icon", str(icon_path)])
+    elif not IS_WINDOWS:
+        png_icon = REPO_ROOT / "resources" / "icon_snafu.png"
+        if png_icon.exists():
+            args.extend(["--icon", str(png_icon)])
     subprocess.run(args, check=True, cwd=str(REPO_ROOT))
 
 
 def copy_emulator_to_dist() -> None:
-    src = RESOURCES_DIR / EXCLUDED_RESOURCE
+    src = RESOURCES_DIR / EMULATOR_EXE
     dist_dir = REPO_ROOT / "dist"
-    if not src.exists():
-        raise FileNotFoundError(f"Emulator not found: {src}")
     dist_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dist_dir / EXCLUDED_RESOURCE)
+    if src.exists():
+        shutil.copy2(src, dist_dir / EMULATOR_EXE)
+        print(f"Copied emulator: {EMULATOR_EXE}")
+    else:
+        print(f"Note: Emulator binary not found at {src}")
+        print(f"You will need to place {EMULATOR_EXE} in the dist folder or install it to PATH.")
 
 
 def main() -> int:
