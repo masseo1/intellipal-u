@@ -152,11 +152,73 @@ IntelliPal uses a fork/implementation of jzIntv available at: https://github.com
      - macOS: `~/Library/Application Support/IntelliPal`
    - Palettes and example configs are located in the `Palettes/` and `resources/` folders.
 
+   Architecture
+
+   ```mermaid
+   graph TB
+       subgraph UI["UI Layer (PySide6/Qt)"]
+           MainWindow["MainWindow<br/>Palette Editor"]
+           GameDialog["GameDialog<br/>Game Session"]
+           SettingsDialog["SettingsDialog<br/>Configuration"]
+           AboutDialog["AboutDialog<br/>System Info"]
+           ColorControl["ColorControl Widget"]
+       end
+
+       subgraph Core["Core Logic"]
+           Palette["palette.py<br/>Palette Parsing & Updates"]
+           Settings["settings.py<br/>Config Management"]
+           Memory["memory_map.py<br/>Shared Memory I/O"]
+           GameSession["GameSession<br/>Dataclass"]
+       end
+
+       subgraph Platform["Platform Abstraction"]
+           Wayland["Wayland Detection"]
+           X11Embed["X11 Window Embedding<br/>xdotool"]
+           Compact["Compact Mode UI<br/>Fallback"]
+       end
+
+       subgraph External["External Systems"]
+           jzintv["jzIntv Emulator<br/>Process"]
+           SHM["Shared Memory<br/>Live Palette"]
+           ROM["ROM Files<br/>Game Data"]
+       end
+
+       MainWindow -->|Create Session| GameDialog
+       MainWindow -->|Edit Palette| Palette
+       MainWindow -->|Save/Load| Settings
+       GameDialog -->|Launch| jzintv
+       GameDialog -->|Send Commands| Memory
+       MainWindow -->|Open| SettingsDialog
+       MainWindow -->|Show Info| AboutDialog
+       ColorControl -->|Render| MainWindow
+       Palette -->|Read/Write| Settings
+       Wayland -->|Detect Session| Compact
+       X11Embed -->|Embed Window| GameDialog
+       jzintv -->|Read/Write| SHM
+       Memory -->|Connect| SHM
+       jzintv -->|Load| ROM
+
+       style MainWindow fill:#4a90e2,color:#fff
+       style GameDialog fill:#7b68ee,color:#fff
+       style Palette fill:#50c878,color:#fff
+       style Memory fill:#ff6b6b,color:#fff
+       style jzintv fill:#ffa500,color:#fff
+   ```
+
+   **Component Overview**:
+   - **UI Layer**: PySide6 Qt-based user interface with main window, dialogs, and custom widgets
+   - **Core Logic**: Palette parsing, settings persistence, and shared memory communication
+   - **Platform Abstraction**: Linux/Wayland detection with X11 embedding or compact fallback
+   - **External Systems**: jzIntv emulator process and shared memory for live palette updates
+
    Development notes
    - Source is organized under the `intellipal/` package. Key modules:
-      - `intellipal/app.py` — main application and dialogs
-      - `intellipal/widgets.py` — UI widgets such as color controls
-      - `intellipal/settings.py` — default settings and persistence
+      - `intellipal/main.py` — application entry point and initialization
+      - `intellipal/app.py` — main application, dialogs, and game session windows
+      - `intellipal/palette.py` — palette file parsing and color management
+      - `intellipal/memory_map.py` — shared memory communication with emulator
+      - `intellipal/settings.py` — configuration and persistence
+      - `intellipal/widgets.py` — custom UI widgets and color controls
 
    License
    - See project root for license information.
